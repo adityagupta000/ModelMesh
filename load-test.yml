@@ -1,0 +1,42 @@
+config:
+  target: "http://localhost:8000"
+  phases:
+    - duration: 30
+      arrivalRate: 5
+      name: baseline
+    - duration: 30
+      arrivalRate: 20
+      name: realistic
+    - duration: 15
+      arrivalRate: 100
+      name: spike
+  payload:
+    path: "./load-test-vars.csv"
+    fields:
+      - apiKey
+
+scenarios:
+  - name: "Document OCR inference"
+    flow:
+      - post:
+          url: "/v1/infer/doc-ocr"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+          formData:
+            file: "./fixtures/sample_document.jpg"
+
+  - name: "ASR transcription"
+    flow:
+      - post:
+          url: "/v1/infer/asr"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
+          formData:
+            file: "./fixtures/sample_audio.wav"
+
+  - name: "List models"
+    flow:
+      - get:
+          url: "/v1/models"
+          headers:
+            Authorization: "Bearer {{ apiKey }}"
