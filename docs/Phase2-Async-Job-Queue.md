@@ -79,8 +79,8 @@ This changes your API contract — clients now poll for results (or use the WebS
 ### 2.3 Worker consumer — filters by `worker_name`, not a hardcoded string
 
 ```python
-# workers/plant_health/consumer.py
-WORKER_NAME = "plant-worker"   # must match models.worker_name in the registry
+# workers/doc_ocr/consumer.py
+WORKER_NAME = "doc-ocr-worker"   # must match models.worker_name in the registry
 
 async def consume_loop(redis):
     group = f"{WORKER_NAME}_group"

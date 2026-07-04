@@ -25,7 +25,7 @@ Point your local Docker builds at minikube's Docker daemon so images don't need 
 ```bash
 eval $(minikube docker-env)
 docker build -t modelmesh-gateway:latest ./gateway
-docker build -t modelmesh-plant-health:latest ./workers/plant_health
+docker build -t modelmesh-doc-ocr:latest ./workers/doc_ocr
 docker build -t modelmesh-asr:latest ./workers/asr
 ```
 
@@ -41,8 +41,8 @@ k8s/
 │   ├── service.yaml
 │   └── configmap.yaml
 ├── workers/
-│   ├── plant-health-deployment.yaml
-│   ├── plant-health-service.yaml
+│   ├── doc-ocr-deployment.yaml
+│   ├── doc-ocr-service.yaml
 │   ├── asr-deployment.yaml
 │   └── asr-service.yaml
 ├── postgres/
@@ -128,23 +128,23 @@ Add `/health` (basic liveness — is the process up) and `/ready` (readiness —
 Same pattern as gateway, but each worker gets its own Deployment + Service so they're independently scalable and independently addressable by DNS name.
 
 ```yaml
-# workers/plant-health-deployment.yaml
+# workers/doc-ocr-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: plant-health-worker
+  name: doc-ocr-worker
   namespace: modelmesh
 spec:
   replicas: 2
   selector:
-    matchLabels: { app: plant-health-worker }
+    matchLabels: { app: doc-ocr-worker }
   template:
     metadata:
-      labels: { app: plant-health-worker }
+      labels: { app: doc-ocr-worker }
     spec:
       containers:
-        - name: plant-health-worker
-          image: modelmesh-plant-health:latest
+        - name: doc-ocr-worker
+          image: modelmesh-doc-ocr:latest
           imagePullPolicy: Never
           ports: [{ containerPort: 50051 }]
           resources:
@@ -159,9 +159,9 @@ spec:
 This is the key step that's different because of Phase 1's registry design. Instead of editing gateway code or environment variables to point at the new K8s DNS names, you update the registry rows:
 
 ```bash
-curl -X PATCH http://gateway/v1/models/<plant-health-model-id> \
+curl -X PATCH http://gateway/v1/models/<doc-ocr-model-id> \
   -H "Authorization: Bearer <admin-key>" \
-  -d '{"endpoint": "plant-health-worker.modelmesh.svc.cluster.local:50051"}'
+  -d '{"endpoint": "doc-ocr-worker.modelmesh.svc.cluster.local:50051"}'
 
 curl -X PATCH http://gateway/v1/models/<asr-model-id> \
   -H "Authorization: Bearer <admin-key>" \
@@ -234,7 +234,7 @@ kubectl get pods -n modelmesh -w
 Test resilience — this is the actual point of the exercise:
 
 ```bash
-kubectl delete pod <plant-health-worker-pod-name> -n modelmesh
+kubectl delete pod <doc-ocr-worker-pod-name> -n modelmesh
 kubectl get pods -n modelmesh -w
 ```
 
@@ -245,7 +245,7 @@ Confirm the gateway keeps serving requests (maybe with a brief blip) while the p
 ## 9. Horizontal scaling test
 
 ```bash
-kubectl scale deployment plant-health-worker --replicas=4 -n modelmesh
+kubectl scale deployment doc-ocr-worker --replicas=4 -n modelmesh
 ```
 
 Re-run your Artillery load test against the gateway and see whether throughput actually improves with more worker replicas. Record the numbers — "I scaled it and it worked" is weak; "I scaled from 2 to 4 replicas and throughput went from X to Y req/s" is strong.

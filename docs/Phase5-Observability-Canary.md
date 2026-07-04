@@ -136,12 +136,12 @@ Deploy a "v2" worker (even a deliberately small change is enough — what matter
 curl -X POST http://gateway/v1/models \
   -H "Authorization: Bearer <admin-key>" \
   -d '{
-    "name": "plant-health",
+    "name": "doc-ocr",
     "version": "v2",
-    "worker_name": "plant-worker-v2",
+    "worker_name": "doc-ocr-worker-v2",
     "protocol": "grpc",
-    "endpoint": "plant-health-worker-v2.modelmesh.svc.cluster.local:50051",
-    "description": "v2 - retrained with updated confidence thresholds"
+    "endpoint": "doc-ocr-worker-v2.modelmesh.svc.cluster.local:50051",
+    "description": "v2 - upgraded OCR engine version with improved preprocessing pipeline"
   }'
 ```
 
@@ -149,11 +149,11 @@ v1 and v2 now coexist as two rows in the `models` table, same `name`, different 
 
 ### 2. Traffic splitting
 
-The gateway needs a small addition here: when a client requests `plant-health` without specifying a version, decide the split in the registry lookup itself rather than in K8s:
+The gateway needs a small addition here: when a client requests `doc-ocr` without specifying a version, decide the split in the registry lookup itself rather than in K8s:
 
 ```python
 async def get_model_with_canary(db, model_name: str, canary_percent: dict):
-    """canary_percent e.g. {'plant-health': {'v2': 10}} means 10% of traffic to v2."""
+    """canary_percent e.g. {'doc-ocr': {'v2': 10}} means 10% of traffic to v2."""
     import random
     versions = await registry.list_versions(db, model_name)
     if model_name in canary_percent:
@@ -167,7 +167,7 @@ async def get_model_with_canary(db, model_name: str, canary_percent: dict):
 
 This is arguably a cleaner mechanism than the Kubernetes replica-ratio trick, and it's a direct product of having built the registry — worth pointing out explicitly if asked "why did you design it this way."
 
-If you want the K8s-native version instead (simpler code, coarser control): run v1 at 9 replicas and v2 at 1 replica behind the same Service selector (matching only `app: plant-health-worker`, not `version`), letting K8s's round-robin do the split. Either approach is honest; pick one and be able to explain the tradeoff against the other.
+If you want the K8s-native version instead (simpler code, coarser control): run v1 at 9 replicas and v2 at 1 replica behind the same Service selector (matching only `app: doc-ocr-worker`, not `version`), letting K8s's round-robin do the split. Either approach is honest; pick one and be able to explain the tradeoff against the other.
 
 ### 3. The actual canary process
 

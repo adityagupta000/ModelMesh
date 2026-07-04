@@ -72,7 +72,7 @@ HTTP/JSON is fine for a public API, but internal service-to-service calls benefi
 Update the registry rows to reflect the new protocol once workers speak gRPC:
 
 ```sql
-UPDATE models SET protocol = 'grpc', endpoint = 'plant-health-worker:50051' WHERE name = 'plant-health';
+UPDATE models SET protocol = 'grpc', endpoint = 'doc-ocr-worker:50051' WHERE name = 'doc-ocr';
 UPDATE models SET protocol = 'grpc', endpoint = 'asr-worker:50051' WHERE name = 'asr';
 ```
 
@@ -122,7 +122,7 @@ python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. inference.pro
 ### 3. Worker: implement the gRPC server
 
 ```python
-# workers/plant_health/grpc_server.py
+# workers/doc_ocr/grpc_server.py
 import grpc
 from concurrent import futures
 import inference_pb2, inference_pb2_grpc
@@ -189,7 +189,7 @@ Go back to the Artillery config from Phase 1, run it again against the gRPC-back
 
 - [ ] WebSocket endpoint streams partial ASR results to a connected client in real time, resolved via the registry
 - [ ] Test client (script or simple page) demonstrates the streaming behavior end-to-end
-- [ ] `.proto` contract defined for at least the Plant Health and ASR workers
+- [ ] `.proto` contract defined for at least the Document OCR and ASR workers
 - [ ] Registry rows updated from `protocol: http` to `protocol: grpc` with zero gateway route-handler changes
 - [ ] Gateway↔worker communication runs over gRPC, not HTTP
 - [ ] Bidirectional streaming gRPC used for at least the ASR path
