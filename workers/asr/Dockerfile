@@ -19,4 +19,6 @@ COPY . .
 
 RUN python -c "import whisper; whisper.load_model('tiny')"
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8002"]
+RUN chmod +x entrypoint.sh
+
+CMD ["./entrypoint.sh"]

@@ -16,4 +16,6 @@ COPY . .
 
 RUN python -c "import easyocr; easyocr.Reader(['en'], gpu=False)"
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+RUN chmod +x entrypoint.sh
+
+CMD ["./entrypoint.sh"]
