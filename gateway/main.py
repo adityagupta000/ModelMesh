@@ -217,3 +217,12 @@ async def disable_model_endpoint(model_id: str, key=_admin_dep()):
 @app.get("/health", tags=["ops"])
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/ready", tags=["ops"])
+async def ready():
+    try:
+        await database.fetch_one("SELECT 1")
+        return {"status": "ready"}
+    except Exception as e:
+        raise HTTPException(503, f"Not ready: {e}")
