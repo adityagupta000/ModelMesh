@@ -3,3 +3,5 @@ uvicorn[standard]==0.32.0
 openai-whisper==20240930
 python-multipart==0.0.12
 setuptools
+redis==5.0.4
+aiokafka==0.11.0
