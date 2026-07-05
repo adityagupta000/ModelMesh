@@ -30,7 +30,7 @@ async def get_model(db: Database, model_name: str, version: str = "v1") -> Optio
         protocol=row["protocol"],
         endpoint=row["endpoint"],
         status=row["status"],
-        description=row.get("description"),
+        description=row["description"],
     )
 
 
@@ -49,7 +49,7 @@ async def get_model_by_id(db: Database, model_id: str) -> Optional[ModelRecord]:
         protocol=row["protocol"],
         endpoint=row["endpoint"],
         status=row["status"],
-        description=row.get("description"),
+        description=row["description"],
     )
 
 
@@ -66,7 +66,7 @@ async def list_models(db: Database) -> list[ModelRecord]:
             protocol=r["protocol"],
             endpoint=r["endpoint"],
             status=r["status"],
-            description=r.get("description"),
+            description=r["description"],
         )
         for r in rows
     ]
