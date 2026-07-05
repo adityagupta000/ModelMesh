@@ -17,6 +17,7 @@ from auth import (
 )
 from rate_limit import check_rate_limit
 import registry
+import queue
 from schemas import (
     UserCreate,
     TokenResponse,
@@ -131,7 +132,6 @@ async def infer(
     version: str = "v1",
     key=_key_dep(),
 ):
-    start = time.perf_counter()
     await check_rate_limit(key.id, key.rate_limit_per_min, redis)
 
     model = await registry.get_model(database, model_name, version)
@@ -141,28 +141,25 @@ async def infer(
         raise HTTPException(503, "Model is currently disabled")
 
     payload_bytes = await file.read()
-    filename = file.filename or "file"
 
-    # Redis cache keyed by model + input hash
-    cache_key = f"cache:{model.id}:{hashlib.sha256(payload_bytes).hexdigest()}"
-    cached = await redis.get(cache_key)
-    cached_hit = cached is not None
-    if cached_hit:
-        result = json.loads(cached)
-    else:
-        result = await route_request(model.endpoint, model.protocol, payload_bytes, filename)
-        await redis.set(cache_key, json.dumps(result), ex=3600)
-
-    latency_ms = int((time.perf_counter() - start) * 1000)
-    await _log_request(key.id, model.id, model_name, "success", latency_ms)
+    # Enqueue job instead of synchronous processing
+    job_id = await queue.enqueue_job(redis, model, payload_bytes, key.id)
 
     return {
-        "result": result,
+        "job_id": job_id,
+        "status": "queued",
         "model": model.name,
         "version": model.version,
-        "latency_ms": latency_ms,
-        "cached": cached_hit,
     }
+
+
+@app.get("/v1/jobs/{job_id}", tags=["inference"])
+async def get_job_status(job_id: str, key=_key_dep()):
+    """Get the status and result of an inference job."""
+    result = await queue.get_job_status(redis, job_id)
+    if not result:
+        raise HTTPException(404, "Job not found or expired")
+    return result
 
 
 # ── model registry endpoints ──────────────────────────────────────────────────
