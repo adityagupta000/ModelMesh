@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ModelMesh WebSocket Test Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        #results {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            background-color: #f9f9f9;
+            min-height: 200px;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+        .partial {
+            color: #666;
+        }
+        .final {
+            color: #000;
+            font-weight: bold;
+        }
+        .error {
+            color: #d00;
+        }
+        .status {
+            color: #070;
+        }
+    </style>
+</head>
+<body>
+    <h1>ModelMesh WebSocket Test Client</h1>
+
+    <div class="form-group">
+        <label for="apiKey">API Key:</label>
+        <input type="text" id="apiKey" placeholder="Enter your API key">
+    </div>
+
+    <div class="form-group">
+        <label for="modelName">Model Name:</label>
+        <select id="modelName">
+            <option value="asr">asr</option>
+            <option value="doc-ocr">doc-ocr</option>
+        </select>
+    </div>
+
+    <div class="form-group">
+        <label for="fileInput">Select File:</label>
+        <input type="file" id="fileInput" accept="audio/*,image/*">
+    </div>
+
+    <button id="connectBtn" onclick="connect()">Connect & Send</button>
+
+    <h2>Results:</h2>
+    <div id="results"></div>
+
+    <script>
+        let ws = null;
+        const resultsDiv = document.getElementById('results');
+        const connectBtn = document.getElementById('connectBtn');
+
+        function log(message, className = '') {
+            const span = document.createElement('span');
+            span.className = className;
+            span.textContent = message + '\n';
+            resultsDiv.appendChild(span);
+            resultsDiv.scrollTop = resultsDiv.scrollHeight;
+        }
+
+        function clearResults() {
+            resultsDiv.innerHTML = '';
+        }
+
+        async function connect() {
+            const apiKey = document.getElementById('apiKey').value.trim();
+            const modelName = document.getElementById('modelName').value;
+            const fileInput = document.getElementById('fileInput');
+
+            if (!apiKey) {
+                alert('Please enter an API key');
+                return;
+            }
+
+            if (!fileInput.files.length) {
+                alert('Please select a file');
+                return;
+            }
+
+            clearResults();
+            connectBtn.disabled = true;
+
+            const file = fileInput.files[0];
+            const uri = `ws://localhost:8000/v1/ws/infer/${modelName}?api_key=${apiKey}&version=v1`;
+
+            log(`Connecting to ${uri}...`, 'status');
+
+            try {
+                ws = new WebSocket(uri);
+
+                ws.onopen = async () => {
+                    log('Connected!', 'status');
+                };
+
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+
+                    if (data.error) {
+                        log(`ERROR: ${data.error}`, 'error');
+                        ws.close();
+                        return;
+                    }
+
+                    if (data.status === 'ready') {
+                        log(`Ready: ${data.model} (${data.protocol})`, 'status');
+                        log(`Sending file (${file.size} bytes)...`, 'status');
+
+                        // Read and send file
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                            ws.send(e.target.result);
+                            log('File sent, waiting for results...', 'status');
+                        };
+                        reader.readAsArrayBuffer(file);
+                        return;
+                    }
+
+                    if (data.partial !== undefined) {
+                        log(`[Partial] ${data.partial}`, 'partial');
+                        if (data.is_final) {
+                            log('[Final result received]', 'final');
+                            ws.close();
+                        }
+                    } else if (data.result) {
+                        log(`[Result] ${JSON.stringify(data.result, null, 2)}`, 'final');
+                        if (data.is_final) {
+                            ws.close();
+                        }
+                    }
+                };
+
+                ws.onerror = (error) => {
+                    log(`WebSocket error: ${error}`, 'error');
+                    connectBtn.disabled = false;
+                };
+
+                ws.onclose = () => {
+                    log('Connection closed', 'status');
+                    connectBtn.disabled = false;
+                };
+
+            } catch (error) {
+                log(`Failed to connect: ${error}`, 'error');
+                connectBtn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
