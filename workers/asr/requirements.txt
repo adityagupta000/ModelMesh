@@ -5,3 +5,5 @@ python-multipart==0.0.12
 setuptools
 redis==5.0.4
 aiokafka==0.11.0
+grpcio==1.62.0
+grpcio-tools==1.62.0

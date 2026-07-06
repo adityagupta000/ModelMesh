@@ -9,3 +9,6 @@ PyJWT==2.8.0
 pydantic[email]==2.7.1
 python-multipart==0.0.9
 aiokafka==0.11.0
+grpcio==1.62.0
+grpcio-tools==1.62.0
+websockets==12.0
