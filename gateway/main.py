@@ -3,8 +3,7 @@ import json
 import time
 
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Header
 
 from db import database, redis, connect, disconnect
 from auth import (
@@ -12,6 +11,7 @@ from auth import (
     verify_password,
     create_access_token,
     create_api_key,
+    decode_token,
     make_verify_api_key,
     make_verify_admin_key,
 )
@@ -51,14 +51,27 @@ async def shutdown():
 
 def _key_dep():
     """Thin wrapper so FastAPI resolves verify_api_key after startup."""
-    async def inner(authorization: str | None = None):
+    async def inner(authorization: str | None = Header(None)):
         return await verify_api_key(authorization)
     return Depends(inner)
 
 
 def _admin_dep():
-    async def inner(authorization: str | None = None):
+    async def inner(authorization: str | None = Header(None)):
         return await verify_admin_key(authorization)
+    return Depends(inner)
+
+
+def _jwt_dep():
+    """Verify JWT token and return user_id — used for issuing API keys."""
+    async def inner(authorization: str | None = Header(None)) -> str:
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(401, "Missing or invalid Authorization header")
+        token = authorization.removeprefix("Bearer ").strip()
+        user_id = decode_token(token)
+        if not user_id:
+            raise HTTPException(401, "Invalid or expired token")
+        return user_id
     return Depends(inner)
 
 
@@ -118,8 +131,8 @@ async def login(payload: UserCreate):
 
 
 @app.post("/v1/auth/api-keys", response_model=ApiKeyResponse, tags=["auth"])
-async def issue_api_key(payload: ApiKeyCreate, key=_key_dep()):
-    raw_key = await create_api_key(database, key.user_id, payload.rate_limit_per_min)
+async def issue_api_key(payload: ApiKeyCreate, user_id=_jwt_dep()):
+    raw_key = await create_api_key(database, user_id, payload.rate_limit_per_min)
     return {"key": raw_key, "rate_limit_per_min": payload.rate_limit_per_min}
 
 
@@ -142,7 +155,6 @@ async def infer(
 
     payload_bytes = await file.read()
 
-    # Enqueue job instead of synchronous processing
     job_id = await queue.enqueue_job(redis, model, payload_bytes, key.id)
 
     return {
@@ -155,7 +167,6 @@ async def infer(
 
 @app.get("/v1/jobs/{job_id}", tags=["inference"])
 async def get_job_status(job_id: str, key=_key_dep()):
-    """Get the status and result of an inference job."""
     result = await queue.get_job_status(redis, job_id)
     if not result:
         raise HTTPException(404, "Job not found or expired")
