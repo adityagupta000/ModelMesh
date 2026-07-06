@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package modelmesh;
+
+service InferenceWorker {
+  rpc Predict (InferenceRequest) returns (InferenceResponse);
+  rpc PredictStream (stream InferenceChunk) returns (stream InferenceResult);
+}
+
+message InferenceRequest {
+  bytes payload = 1;
+  string model_name = 2;
+}
+
+message InferenceResponse {
+  string result_json = 1;
+  float latency_ms = 2;
+}
+
+message InferenceChunk {
+  bytes chunk = 1;
+  int32 sequence = 2;
+  bool is_final = 3;
+}
+
+message InferenceResult {
+  string partial_text = 1;
+  bool is_final = 2;
+  float confidence = 3;
+}
