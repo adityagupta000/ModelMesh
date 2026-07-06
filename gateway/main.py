@@ -3,7 +3,7 @@ import json
 import time
 
 import httpx
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Header
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Header, WebSocket, WebSocketDisconnect
 
 from db import database, redis, connect, disconnect
 from auth import (
@@ -18,6 +18,7 @@ from auth import (
 from rate_limit import check_rate_limit
 import registry
 from job_queue import enqueue_job, get_job_status as _get_job_status
+from grpc_client import call_worker_grpc
 from schemas import (
     UserCreate,
     TokenResponse,
@@ -89,15 +90,26 @@ async def _log_request(key_id: str, model_id: str, model_name: str, status: str,
     )
 
 
-async def route_request(endpoint: str, protocol: str, payload: bytes, filename: str = "file") -> dict:
+async def route_request(endpoint: str, protocol: str, payload: bytes, filename: str = "file", model_name: str = ""):
     if protocol == "http":
+        # Determine content-type/filename so workers that validate MIME type
+        # (e.g. doc-ocr requiring image/*) don't reject the request.
+        if "ocr" in model_name:
+            content_type = "image/jpeg"
+            filename = filename if filename != "file" else "upload.jpg"
+        elif model_name == "asr":
+            content_type = "audio/wav"
+            filename = filename if filename != "file" else "upload.wav"
+        else:
+            content_type = "application/octet-stream"
+
         async with httpx.AsyncClient(timeout=30.0) as client:
-            files = {"file": (filename, payload)}
+            files = {"file": (filename, payload, content_type)}
             resp = await client.post(endpoint, files=files)
             resp.raise_for_status()
             return resp.json()
     elif protocol == "grpc":
-        raise NotImplementedError("gRPC routing arrives in Phase 3")
+        return await call_worker_grpc(endpoint, model_name, payload)
     else:
         raise ValueError(f"Unsupported protocol: {protocol}")
 
@@ -234,3 +246,103 @@ async def ready():
         return {"status": "ready"}
     except Exception as e:
         raise HTTPException(503, f"Not ready: {e}")
+
+
+# ── WebSocket streaming endpoint ─────────────────────────────────────────────
+
+@app.websocket("/v1/ws/infer/{model_name}")
+async def ws_infer(websocket: WebSocket, model_name: str):
+    """
+    WebSocket endpoint for streaming inference.
+
+    Query params:
+        api_key: API key for authentication
+        version: Model version (default: v1)
+
+    Sends partial results as JSON messages: {"partial": result, "is_final": bool}
+    """
+    await websocket.accept()
+
+    try:
+        # Authenticate via query param
+        api_key = websocket.query_params.get("api_key")
+        if not api_key:
+            await websocket.send_json({"error": "Missing api_key query parameter"})
+            await websocket.close(code=4401)
+            return
+
+        # Verify API key
+        key_record = await database.fetch_one(
+            "SELECT id, user_id, rate_limit_per_min FROM api_keys WHERE key_hash = :hash",
+            {"hash": hashlib.sha256(api_key.encode()).hexdigest()}
+        )
+
+        if not key_record:
+            await websocket.send_json({"error": "Invalid API key"})
+            await websocket.close(code=4401)
+            return
+
+        # Rate limiting
+        await check_rate_limit(key_record["id"], key_record["rate_limit_per_min"], redis)
+
+        # Resolve model from registry
+        version = websocket.query_params.get("version", "v1")
+        model = await registry.get_model(database, model_name, version)
+
+        if not model:
+            await websocket.send_json({"error": "Unknown model"})
+            await websocket.close(code=4404)
+            return
+
+        if model.status != "active":
+            await websocket.send_json({"error": "Model is currently disabled"})
+            await websocket.close(code=4503)
+            return
+
+        # Send ready signal
+        await websocket.send_json({"status": "ready", "model": model.name, "protocol": model.protocol})
+
+        # Handle streaming based on protocol
+        if model.protocol == "grpc" and model.supports_streaming:
+            from grpc_client import stream_worker_grpc
+
+            chunk_count = 0
+
+            async def chunk_generator():
+                nonlocal chunk_count
+                try:
+                    while True:
+                        data = await websocket.receive_bytes()
+                        chunk_count += 1
+                        is_final = True  # simplified: one chunk for now
+                        yield data, chunk_count, is_final
+                        if is_final:
+                            break
+                except WebSocketDisconnect:
+                    pass
+
+            async for partial_result in stream_worker_grpc(model.endpoint, model.name, chunk_generator()):
+                await websocket.send_json({
+                    "partial": partial_result.get("text", ""),
+                    "is_final": partial_result.get("is_final", False),
+                    "confidence": partial_result.get("confidence", 0.0)
+                })
+
+        else:
+            # Covers: http protocol, AND grpc protocol without streaming support (e.g. doc-ocr)
+            data = await websocket.receive_bytes()
+            result = await route_request(model.endpoint, model.protocol, data, model_name=model.name)
+            await websocket.send_json({"result": result, "is_final": True})
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"error": str(e)})
+        except:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
