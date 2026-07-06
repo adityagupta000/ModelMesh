@@ -12,10 +12,11 @@ RUN pip install --no-cache-dir --timeout=120 --retries=5 --upgrade pip "setuptoo
 
 RUN pip install --no-cache-dir --timeout=120 --retries=5 torch --index-url https://download.pytorch.org/whl/cpu
 
-COPY requirements.txt .
+COPY workers/asr/requirements.txt .
 RUN pip install --no-cache-dir --timeout=120 --retries=5 -r requirements.txt
 
-COPY . .
+COPY inference.proto .
+COPY workers/asr/ .
 
 RUN python -c "import whisper; whisper.load_model('tiny')"
 
