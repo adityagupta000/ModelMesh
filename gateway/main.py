@@ -17,7 +17,7 @@ from auth import (
 )
 from rate_limit import check_rate_limit
 import registry
-import queue
+from job_queue import enqueue_job, get_job_status as _get_job_status
 from schemas import (
     UserCreate,
     TokenResponse,
@@ -155,7 +155,7 @@ async def infer(
 
     payload_bytes = await file.read()
 
-    job_id = await queue.enqueue_job(redis, model, payload_bytes, key.id)
+    job_id = await enqueue_job(redis, model, payload_bytes, key.id)
 
     return {
         "job_id": job_id,
@@ -167,7 +167,7 @@ async def infer(
 
 @app.get("/v1/jobs/{job_id}", tags=["inference"])
 async def get_job_status(job_id: str, key=_key_dep()):
-    result = await queue.get_job_status(redis, job_id)
+    result = await _get_job_status(redis, job_id)
     if not result:
         raise HTTPException(404, "Job not found or expired")
     return result
