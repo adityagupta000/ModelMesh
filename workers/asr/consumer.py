@@ -150,7 +150,10 @@ async def consume_loop():
                             for k, v in fields.items()
                         }
 
-                        # Filter by worker_name
+                # Note: we filter by worker_name, not model status. A job enqueued before
+                # the model was disabled will still process to completion. Disabling a model
+                # stops new jobs from being accepted, not in-flight ones.
+                # Filter by worker_name
                         if job_data.get("worker_name") != WORKER_NAME:
                             logger.debug(f"Skipping job for different worker: {job_data.get('worker_name')}")
                             await redis.xack("inference_jobs", group, entry_id)
