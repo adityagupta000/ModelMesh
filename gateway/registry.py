@@ -12,6 +12,7 @@ class ModelRecord:
     protocol: str
     endpoint: str
     status: str
+    supports_streaming: bool = False
     description: Optional[str] = None
 
 
@@ -30,6 +31,7 @@ async def get_model(db: Database, model_name: str, version: str = "v1") -> Optio
         protocol=row["protocol"],
         endpoint=row["endpoint"],
         status=row["status"],
+        supports_streaming=row["supports_streaming"],
         description=row["description"],
     )
 
@@ -79,11 +81,12 @@ async def register_model(
     worker_name: str,
     protocol: str,
     endpoint: str,
+    supports_streaming: bool = False,
     description: Optional[str] = None,
 ) -> str:
     row = await db.fetch_one(
-        """INSERT INTO models (name, version, worker_name, protocol, endpoint, description)
-           VALUES (:name, :version, :worker_name, :protocol, :endpoint, :description)
+        """INSERT INTO models (name, version, worker_name, protocol, endpoint, supports_streaming, description)
+           VALUES (:name, :version, :worker_name, :protocol, :endpoint, :supports_streaming, :description)
            RETURNING id""",
         {
             "name": name,
@@ -91,6 +94,7 @@ async def register_model(
             "worker_name": worker_name,
             "protocol": protocol,
             "endpoint": endpoint,
+            "supports_streaming": supports_streaming,
             "description": description,
         },
     )
@@ -100,7 +104,7 @@ async def register_model(
 async def update_model(db: Database, model_id: str, **fields) -> None:
     if not fields:
         return
-    allowed = {"worker_name", "protocol", "endpoint", "status", "description"}
+    allowed = {"worker_name", "protocol", "endpoint", "status", "supports_streaming", "description"}
     safe_fields = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not safe_fields:
         return

@@ -25,8 +25,9 @@ class ModelRegistration(BaseModel):
     name: str
     version: str = "v1"
     worker_name: str
-    protocol: str  # 'http' | 'grpc'
+    protocol: str
     endpoint: str
+    supports_streaming: bool = False
     description: Optional[str] = None
 
 
@@ -35,6 +36,7 @@ class ModelUpdate(BaseModel):
     protocol: Optional[str] = None
     endpoint: Optional[str] = None
     status: Optional[str] = None
+    supports_streaming: Optional[bool] = None
     description: Optional[str] = None
 
 
