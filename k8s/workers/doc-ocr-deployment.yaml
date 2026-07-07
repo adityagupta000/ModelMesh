@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: doc-ocr-worker
+  namespace: modelmesh
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: doc-ocr-worker }
+  template:
+    metadata:
+      labels: { app: doc-ocr-worker }
+    spec:
+      containers:
+        - name: doc-ocr-worker
+          image: modelmesh-doc-ocr:latest
+          imagePullPolicy: Never
+          env:
+            - name: REDIS_URL
+              value: "redis://redis:6379"
+          ports:
+            - containerPort: 8001
+            - containerPort: 50051
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits: { cpu: "1", memory: "1.5Gi" }
