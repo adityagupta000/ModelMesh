@@ -2,7 +2,7 @@
 
 A production-ready model serving platform with async job queues, dynamic model registry, and comprehensive observability.
 
-**Current Status**: Phase 2 Complete (Async Job Queue with Redis Streams + Kafka)
+**Current Status**: Phase 4 Complete (Kubernetes Deployment)
 
 ## Prerequisites
 
@@ -324,3 +324,361 @@ See worker files: `consumer.py` (Redis), `kafka_consumer.py` (Kafka)
 - [x] Documented behavior for stale models
 - [x] Kafka alternative implementation
 - [x] Redis Streams vs Kafka comparison documented
+
+### Phase 3
+
+- [x] WebSocket endpoint `/v1/ws/infer/{model_name}` working
+- [x] API key authentication via query parameter
+- [x] gRPC servers in all workers (HTTP + gRPC + Redis consumer)
+- [x] Protocol abstraction in registry (http vs grpc)
+- [x] Protobuf contract for InferenceWorker service
+- [x] Bidirectional streaming RPC (PredictStream)
+- [x] Unary RPC (Predict)
+- [x] WebSocket test clients (Python + HTML)
+- [x] Zero code changes to switch protocols
+
+### Phase 4
+
+- [x] Kubernetes namespace (modelmesh)
+- [x] Redis Deployment + Service
+- [x] Postgres StatefulSet + Service + PVC
+- [x] Postgres init ConfigMap with schema
+- [x] Gateway Deployment + Service
+- [x] Worker Deployments + Services (doc-ocr, asr)
+- [x] Secrets for JWT and DB passwords
+- [x] Resource requests and limits on all pods
+- [x] Readiness and liveness probes
+- [x] Multi-service containers in workers
+- [x] Protobuf compilation in entrypoint
+- [x] Verified on minikube with port-forward access
+
+---
+
+## Phase 3: WebSockets + gRPC (Complete)
+
+Real-time streaming for clients via WebSockets and high-performance internal communication via gRPC.
+
+### Features Implemented
+
+- **WebSocket endpoint** (`/v1/ws/infer/{model_name}`) for real-time streaming
+- **gRPC workers** with Protocol Buffers for internal communication
+- **Bidirectional streaming** for ASR (PredictStream RPC)
+- **Unary gRPC** for doc-ocr (Predict RPC)
+- **Protocol abstraction** in registry (http vs grpc switchable)
+- **Multi-service containers** (HTTP server + gRPC server + Redis consumer)
+- WebSocket test clients (Python CLI + browser HTML)
+- Protobuf compilation in Docker build process
+
+### Architecture
+
+```
+Client → Gateway (WebSocket) → Worker (gRPC stream) → Partial results
+         Real-time push
+
+Client → Gateway (HTTP) → Worker (gRPC unary) → Result
+         Sync path with gRPC
+```
+
+### WebSocket Usage
+
+#### Python CLI
+
+```bash
+python test_ws_client.py <api_key> asr audio.wav
+python test_ws_client.py <api_key> doc-ocr image.jpg
+```
+
+#### Browser
+
+Open `test_ws_client.html`, enter API key, select file, click "Connect & Send"
+
+#### WebSocket Protocol
+
+1. Client connects: `ws://localhost:8000/v1/ws/infer/{model_name}?api_key=xxx`
+2. Server sends: `{"status": "ready"}`
+3. Client sends file bytes
+4. Server streams results: `{"text": "...", "is_final": false}`
+5. Final result: `{"text": "...", "is_final": true}`
+6. Connection closes
+
+### gRPC Configuration
+
+Models can switch between HTTP and gRPC via registry:
+
+```sql
+-- Switch doc-ocr to gRPC
+UPDATE models
+SET protocol = 'grpc', endpoint = 'doc-ocr-worker:50051'
+WHERE name = 'doc-ocr';
+
+-- Switch back to HTTP
+UPDATE models
+SET protocol = 'http', endpoint = 'http://doc-ocr-worker:8001/infer'
+WHERE name = 'doc-ocr';
+```
+
+Zero gateway code changes required.
+
+### gRPC Ports
+
+- doc-ocr-worker: 50051
+- asr-worker: 50052
+
+### Key Design Decisions
+
+**Why WebSockets?**
+
+- Eliminates polling overhead from Phase 2
+- Server pushes updates as they arrive
+- Bi-directional: client streams audio chunks, receives transcription chunks
+- Lower latency for real-time use cases
+
+**Why gRPC?**
+
+- Binary protocol (faster than JSON)
+- Strongly-typed contracts (protobuf)
+- Built-in bidirectional streaming
+- Lower latency for high-frequency calls
+
+**Trade-off**: More complexity (protobuf compilation, WebSocket lifecycle management)
+
+### Streaming Behavior
+
+**ASR streaming caveat**: Whisper doesn't support token-level streaming. Current implementation:
+
+1. Client sends full audio over WebSocket
+2. Worker processes entire file (Whisper limitation)
+3. Worker sends single result as "partial"
+4. Worker marks `is_final: true`
+
+This is chunk-level streaming, not token-by-token. Infrastructure is in place for future models with true incremental output.
+
+---
+
+## Phase 4: Kubernetes Deployment (Complete)
+
+Production-ready Kubernetes manifests for local (minikube) and cloud deployment.
+
+### Features Implemented
+
+- **Namespace** isolation (modelmesh)
+- **StatefulSet** for Postgres with persistent volume
+- **Deployments** for Redis, Gateway, Workers
+- **Services** for internal communication
+- **ConfigMaps** for Postgres init SQL
+- **Secrets** for sensitive data (JWT, DB passwords)
+- **Multi-service containers** in workers (HTTP + gRPC + Redis consumer)
+- Resource requests and limits
+- Health checks (readiness + liveness probes)
+
+### Quick Start (minikube)
+
+#### 1. Start minikube
+
+```bash
+minikube start --cpus=2 --memory=4096
+minikube addons enable metrics-server
+```
+
+#### 2. Build images in minikube's Docker
+
+```bash
+eval $(minikube docker-env)
+docker build -t modelmesh-gateway:latest -f gateway/Dockerfile .
+docker build -t modelmesh-doc-ocr:latest -f workers/doc_ocr/Dockerfile .
+docker build -t modelmesh-asr:latest -f workers/asr/Dockerfile .
+```
+
+#### 3. Deploy to Kubernetes
+
+```bash
+# Apply all manifests
+kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/secrets.yaml
+kubectl apply -f k8s/redis/
+kubectl apply -f k8s/postgres/
+kubectl apply -f k8s/gateway/
+kubectl apply -f k8s/workers/
+
+# Check status
+kubectl get pods -n modelmesh
+kubectl get svc -n modelmesh
+```
+
+#### 4. Access the gateway
+
+```bash
+# Port-forward gateway
+kubectl port-forward -n modelmesh svc/gateway 8000:80
+
+# Gateway now at http://localhost:8000
+curl http://localhost:8000/v1/models
+```
+
+### Manifest Structure
+
+```
+k8s/
+├── namespace.yaml              # modelmesh namespace
+├── secrets.yaml                # JWT secret, DB passwords
+├── redis/
+│   ├── deployment.yaml         # Redis single replica
+│   └── service.yaml
+├── postgres/
+│   ├── statefulset.yaml        # Postgres with PVC
+│   ├── service.yaml
+│   └── init-configmap.yaml     # init.sql schema
+├── gateway/
+│   ├── deployment.yaml         # Gateway replicas
+│   ├── service.yaml
+│   └── jwt-secret.yaml         # JWT secret (separate)
+└── workers/
+    ├── doc-ocr-deployment.yaml
+    ├── doc-ocr-service.yaml
+    ├── asr-deployment.yaml
+    └── asr-service.yaml
+```
+
+### Key Design Decisions
+
+**Why StatefulSet for Postgres?**
+
+- Stable network identity (postgres-0)
+- Persistent volume survives pod restarts
+- Ordered deployment and scaling
+
+**Why Deployments for workers?**
+
+- Stateless (job queue handles state)
+- Can scale horizontally
+- Rolling updates without data loss
+
+**Resource Limits**
+
+All services have:
+
+- **Requests**: Minimum guaranteed resources
+- **Limits**: Maximum allowed resources
+- Prevents resource starvation
+
+Example:
+
+```yaml
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+```
+
+### Scaling Workers
+
+```bash
+# Scale doc-ocr to 3 replicas
+kubectl scale deployment doc-ocr-worker -n modelmesh --replicas=3
+
+# Scale ASR to 2 replicas
+kubectl scale deployment asr-worker -n modelmesh --replicas=2
+
+# Jobs automatically distributed via Redis Streams consumer groups
+```
+
+### Monitoring
+
+```bash
+# Pod status
+kubectl get pods -n modelmesh -w
+
+# Pod logs
+kubectl logs -n modelmesh -f deployment/gateway
+kubectl logs -n modelmesh -f deployment/doc-ocr-worker
+kubectl logs -n modelmesh -f deployment/asr-worker
+
+# Describe pod (events, resource usage)
+kubectl describe pod -n modelmesh <pod-name>
+
+# Resource usage (requires metrics-server)
+kubectl top pods -n modelmesh
+kubectl top nodes
+```
+
+### Secrets Management
+
+**Local development** (committed to git, NOT for production):
+
+```yaml
+# k8s/secrets.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: modelmesh-secrets
+  namespace: modelmesh
+stringData:
+  jwt-secret: "dev-secret-change-in-prod"
+  db-password: "password"
+```
+
+**Production** (use external secret management):
+
+- AWS Secrets Manager → External Secrets Operator
+- HashiCorp Vault → Vault CSI driver
+- Google Secret Manager → GKE Workload Identity
+
+Never commit production secrets to git.
+
+### Health Checks
+
+All services have readiness and liveness probes:
+
+**Readiness**: Is the service ready to accept traffic?
+
+- Gateway: HTTP GET /v1/models
+- Workers: HTTP GET /health
+
+**Liveness**: Is the service alive?
+
+- Gateway: HTTP GET /v1/models
+- Workers: HTTP GET /health
+
+Failed probes → Kubernetes restarts the pod.
+
+### Persistent Storage
+
+**Postgres** uses PersistentVolumeClaim (PVC):
+
+```yaml
+volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
+```
+
+**minikube**: Uses hostPath provisioner (data survives pod restarts, not cluster deletion)
+
+**Production**: Use cloud storage classes:
+
+- AWS: gp3 EBS volumes
+- GCP: pd-ssd persistent disks
+- Azure: managed-premium disks
+
+### Next Steps (Production Readiness)
+
+1. **Ingress Controller** (nginx/traefik) for external access
+2. **TLS certificates** (cert-manager + Let's Encrypt)
+3. **Horizontal Pod Autoscaler** (HPA) based on CPU/memory/custom metrics
+4. **NetworkPolicy** for pod-to-pod communication rules
+5. **External secret management** (AWS Secrets Manager, Vault)
+6. **Monitoring stack** (Prometheus + Grafana) → Phase 5
+7. **CI/CD pipeline** (GitOps with ArgoCD/FluxCD)
+
+See `docs/Phase4-Kubernetes-Deployment.md` for full implementation notes.
+
+---
+
+## Definition of Done Checklist
