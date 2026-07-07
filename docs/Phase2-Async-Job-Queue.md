@@ -11,6 +11,7 @@
 ## What Was Implemented
 
 ### Core Features (All Complete)
+
 - Redis Streams job queue with consumer groups
 - Kafka alternative (KRaft mode, no Zookeeper)
 - Async `/v1/infer/{model_name}` endpoint (returns job_id)
@@ -24,6 +25,7 @@
 - Horizontal worker scaling
 
 ### Architecture
+
 ```
 Client → Gateway → Redis Streams / Kafka → Workers (async)
          ↓                                    ↓
@@ -51,6 +53,7 @@ Client polls /v1/jobs/{job_id} for result
 ## Key Design Decisions
 
 **Why async queue?**
+
 - Gateway never blocks on slow inference
 - Workers scale independently
 - Automatic retries on failures

@@ -11,6 +11,7 @@
 ## What Was Implemented
 
 ### Core Features (All Complete)
+
 - Namespace isolation (`modelmesh`)
 - StatefulSet for Postgres with PersistentVolume
 - Deployments for Redis, Gateway, Workers
@@ -23,6 +24,7 @@
 - Protobuf compilation in entrypoint scripts
 
 ### Manifest Structure
+
 ```
 k8s/
 ├── namespace.yaml              # modelmesh namespace
@@ -155,11 +157,13 @@ kubectl top nodes
 ## Health Checks
 
 **Readiness probes**: Is service ready to accept traffic?
+
 - Gateway: HTTP GET /v1/models
 - Workers: HTTP GET /health
 
 **Liveness probes**: Is service alive?
-- Gateway: HTTP GET /v1/models  
+
+- Gateway: HTTP GET /v1/models
 - Workers: HTTP GET /health
 
 Failed probes trigger Kubernetes pod restarts.
@@ -169,6 +173,7 @@ Failed probes trigger Kubernetes pod restarts.
 ## Persistent Storage
 
 **Postgres**: Uses PersistentVolumeClaim (1Gi)
+
 - minikube: hostPath provisioner (data survives pod restarts, not cluster deletion)
 - Production: Use cloud storage classes (EBS, pd-ssd, managed-premium)
 
@@ -179,6 +184,7 @@ Failed probes trigger Kubernetes pod restarts.
 **Postgres init**: Originally planned to seed schema at container startup. Implemented via ConfigMap mounting `init.sql` into `/docker-entrypoint-initdb.d/`.
 
 **gRPC ports**: Exposed via Services:
+
 - doc-ocr-worker: 50051
 - asr-worker: 50052 (mapped from internal 50051 to avoid conflict)
 
@@ -189,6 +195,7 @@ Failed probes trigger Kubernetes pod restarts.
 ## Next Steps (Production Readiness)
 
 Not implemented in Phase 4, but would be needed for production:
+
 - Ingress Controller (nginx/traefik) for external access
 - TLS certificates (cert-manager + Let's Encrypt)
 - Horizontal Pod Autoscaler (HPA)

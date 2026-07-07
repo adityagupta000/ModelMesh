@@ -11,12 +11,14 @@
 ## What Was Implemented
 
 ### Part A: WebSockets (Client-Facing Streaming) - COMPLETE
+
 - WebSocket endpoint `/v1/ws/infer/{model_name}`
 - API key auth via query parameter (browser WebSocket limitation)
 - Real-time result streaming
 - Test clients (Python CLI + browser HTML)
 
 ### Part B: gRPC (Internal Worker Communication) - COMPLETE
+
 - Protobuf contract (`inference.proto`)
 - Unary RPC (`Predict`) for doc-ocr
 - Bidirectional streaming RPC (`PredictStream`) for ASR
@@ -25,6 +27,7 @@
 - Protocol switching via registry (HTTP ↔ gRPC)
 
 ### Architecture
+
 ```
 Client → Gateway (WebSocket) → Worker (gRPC stream) → Partial results
          Real-time push
@@ -51,6 +54,7 @@ Client → Gateway (HTTP) → Worker (gRPC unary) → Result
 ## Key Design Decisions
 
 **Why WebSockets?**
+
 - Eliminates polling from Phase 2
 - Server pushes updates as they arrive
 - Bi-directional streaming
@@ -59,6 +63,7 @@ Client → Gateway (HTTP) → Worker (gRPC unary) → Result
 **Trade-off**: More complex client lifecycle management
 
 **Why gRPC?**
+
 - Binary protocol (faster than JSON)
 - Strongly-typed contracts (protobuf)
 - Built-in streaming
@@ -67,9 +72,11 @@ Client → Gateway (HTTP) → Worker (gRPC unary) → Result
 **Trade-off**: More complex setup (protobuf compilation)
 
 **Protocol Abstraction**: Phase 1's registry design paid off. Switching HTTP → gRPC is a data change:
+
 ```sql
 UPDATE models SET protocol = 'grpc', endpoint = 'doc-ocr-worker:50051' WHERE name = 'doc-ocr';
 ```
+
 Zero gateway code changes required.
 
 **Streaming caveat**: Whisper doesn't support token-level streaming. Implementation is chunk-level (send full audio, get result when ready, mark `is_final: true`). Honest streaming behavior, but not token-by-token. Infrastructure ready for future models with true incremental output.
@@ -94,6 +101,7 @@ Zero gateway code changes required.
 ## Multi-Service Containers
 
 Workers now run THREE services concurrently:
+
 1. HTTP server (Phase 1 legacy, port 8001)
 2. gRPC server (Phase 3, port 50051)
 3. Redis consumer (Phase 2, foreground)
@@ -105,6 +113,7 @@ Achieved via entrypoint script backgrounding HTTP and gRPC, running consumer in 
 ## Testing
 
 ### WebSocket Test
+
 ```bash
 python test_ws_client.py <api_key> asr test-audio.wav
 ```
@@ -112,11 +121,12 @@ python test_ws_client.py <api_key> asr test-audio.wav
 Browser: Open `test_ws_client.html`, enter API key, select file, click "Connect & Send"
 
 ### Switch Protocol via Registry
+
 ```sql
 -- HTTP
 UPDATE models SET protocol = 'http', endpoint = 'http://doc-ocr-worker:8001/infer' WHERE name = 'doc-ocr';
 
--- gRPC  
+-- gRPC
 UPDATE models SET protocol = 'grpc', endpoint = 'doc-ocr-worker:50051' WHERE name = 'doc-ocr';
 ```
 
