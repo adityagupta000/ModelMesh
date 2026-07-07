@@ -28,6 +28,7 @@ class ModelRegistration(BaseModel):
     protocol: str
     endpoint: str
     supports_streaming: bool = False
+    canary_percent: int = 0
     description: Optional[str] = None
 
 
@@ -37,6 +38,7 @@ class ModelUpdate(BaseModel):
     endpoint: Optional[str] = None
     status: Optional[str] = None
     supports_streaming: Optional[bool] = None
+    canary_percent: Optional[int] = None
     description: Optional[str] = None
 
 

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import time
+import random
 
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Header, WebSocket, WebSocketDisconnect
@@ -114,6 +115,25 @@ async def route_request(endpoint: str, protocol: str, payload: bytes, filename: 
         raise ValueError(f"Unsupported protocol: {protocol}")
 
 
+async def get_model_with_canary(db, model_name: str):
+    """
+    Registry-driven canary routing. When more than one active version of a
+    model exists, the highest version string is treated as the canary
+    candidate and routed to based on its own canary_percent field — no
+    hardcoded config, no separate dict, purely data-driven per Phase 1's
+    design principle.
+    """
+    versions = await registry.list_versions(db, model_name)
+    if not versions:
+        return None
+    if len(versions) == 1:
+        return versions[0]
+    canary = max(versions, key=lambda m: m.version)
+    stable = min(versions, key=lambda m: m.version)
+    roll = random.randint(1, 100)
+    return canary if roll <= canary.canary_percent else stable
+
+
 # ── auth endpoints ────────────────────────────────────────────────────────────
 
 @app.post("/v1/auth/register", tags=["auth"])
@@ -154,12 +174,20 @@ async def issue_api_key(payload: ApiKeyCreate, user_id=_jwt_dep()):
 async def infer(
     model_name: str,
     file: UploadFile = File(...),
-    version: str = "v1",
+    version: str | None = None,
     key=_key_dep(),
 ):
     await check_rate_limit(key.id, key.rate_limit_per_min, redis)
 
-    model = await registry.get_model(database, model_name, version)
+    if version is None:
+        # No version pinned by the caller — apply registry-driven canary routing.
+        model = await get_model_with_canary(database, model_name)
+    else:
+        # Caller explicitly pinned a version (e.g. ?version=v1) — always honor it,
+        # bypassing canary logic entirely. This is what lets some traffic stay
+        # deliberately on stable during a rollout.
+        model = await registry.get_model(database, model_name, version)
+
     if not model:
         raise HTTPException(404, "Unknown model")
     if model.status != "active":

@@ -13,6 +13,7 @@ class ModelRecord:
     endpoint: str
     status: str
     supports_streaming: bool = False
+    canary_percent: int = 0
     description: Optional[str] = None
 
 
@@ -32,6 +33,7 @@ async def get_model(db: Database, model_name: str, version: str = "v1") -> Optio
         endpoint=row["endpoint"],
         status=row["status"],
         supports_streaming=row["supports_streaming"],
+        canary_percent=row["canary_percent"],
         description=row["description"],
     )
 
@@ -51,6 +53,8 @@ async def get_model_by_id(db: Database, model_id: str) -> Optional[ModelRecord]:
         protocol=row["protocol"],
         endpoint=row["endpoint"],
         status=row["status"],
+        supports_streaming=row["supports_streaming"],
+        canary_percent=row["canary_percent"],
         description=row["description"],
     )
 
@@ -68,6 +72,32 @@ async def list_models(db: Database) -> list[ModelRecord]:
             protocol=r["protocol"],
             endpoint=r["endpoint"],
             status=r["status"],
+            supports_streaming=r["supports_streaming"],
+            canary_percent=r["canary_percent"],
+            description=r["description"],
+        )
+        for r in rows
+    ]
+
+
+async def list_versions(db: Database, model_name: str) -> list[ModelRecord]:
+    """All active versions of a model, ordered by version string.
+    Used by canary routing to find the 'stable' (lowest) and 'canary' (highest) versions."""
+    rows = await db.fetch_all(
+        "SELECT * FROM models WHERE name = :name AND status = 'active' ORDER BY version",
+        {"name": model_name},
+    )
+    return [
+        ModelRecord(
+            id=str(r["id"]),
+            name=r["name"],
+            version=r["version"],
+            worker_name=r["worker_name"],
+            protocol=r["protocol"],
+            endpoint=r["endpoint"],
+            status=r["status"],
+            supports_streaming=r["supports_streaming"],
+            canary_percent=r["canary_percent"],
             description=r["description"],
         )
         for r in rows
@@ -82,11 +112,12 @@ async def register_model(
     protocol: str,
     endpoint: str,
     supports_streaming: bool = False,
+    canary_percent: int = 0,
     description: Optional[str] = None,
 ) -> str:
     row = await db.fetch_one(
-        """INSERT INTO models (name, version, worker_name, protocol, endpoint, supports_streaming, description)
-           VALUES (:name, :version, :worker_name, :protocol, :endpoint, :supports_streaming, :description)
+        """INSERT INTO models (name, version, worker_name, protocol, endpoint, supports_streaming, canary_percent, description)
+           VALUES (:name, :version, :worker_name, :protocol, :endpoint, :supports_streaming, :canary_percent, :description)
            RETURNING id""",
         {
             "name": name,
@@ -95,6 +126,7 @@ async def register_model(
             "protocol": protocol,
             "endpoint": endpoint,
             "supports_streaming": supports_streaming,
+            "canary_percent": canary_percent,
             "description": description,
         },
     )
@@ -104,7 +136,7 @@ async def register_model(
 async def update_model(db: Database, model_id: str, **fields) -> None:
     if not fields:
         return
-    allowed = {"worker_name", "protocol", "endpoint", "status", "supports_streaming", "description"}
+    allowed = {"worker_name", "protocol", "endpoint", "status", "supports_streaming", "canary_percent", "description"}
     safe_fields = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not safe_fields:
         return
