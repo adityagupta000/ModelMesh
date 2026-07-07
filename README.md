@@ -307,7 +307,7 @@ docker build -t modelmesh-asr:latest -f workers/asr/Dockerfile .
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/secrets.yaml
 kubectl apply -f k8s/redis/
-kubectl apply -f k8s/postgres/
+kubectl apply -f k8s/postgres/4
 kubectl apply -f k8s/gateway/
 kubectl apply -f k8s/workers/
 
@@ -362,12 +362,12 @@ GROUP BY model_name, model_version;
 
 ## Phase Implementation Status
 
-| Phase       | Status           | Features                                                                                               | Documentation                                                                   |
-| ----------- | ---------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| **Phase 1** | Complete      | Core gateway, registry, auth                                                                           | [Phase1-Core-Gateway.md](docs/Phase1-Core-Gateway.md)                           |
-| **Phase 2** | Complete      | Async queue, retry, DLQ                                                                                | [Phase2-Async-Job-Queue.md](docs/Phase2-Async-Job-Queue.md)                     |
-| **Phase 3** | Complete      | WebSocket, gRPC, streaming                                                                             | [Phase3-Streaming-gRPC-WebSockets.md](docs/Phase3-Streaming-gRPC-WebSockets.md) |
-| **Phase 4** | Complete      | Kubernetes, StatefulSets                                                                               | [Phase4-Kubernetes-Deployment.md](docs/Phase4-Kubernetes-Deployment.md)         |
+| Phase       | Status        | Features                                                                                          | Documentation                                                                   |
+| ----------- | ------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| **Phase 1** | Complete      | Core gateway, registry, auth                                                                      | [Phase1-Core-Gateway.md](docs/Phase1-Core-Gateway.md)                           |
+| **Phase 2** | Complete      | Async queue, retry, DLQ                                                                           | [Phase2-Async-Job-Queue.md](docs/Phase2-Async-Job-Queue.md)                     |
+| **Phase 3** | Complete      | WebSocket, gRPC, streaming                                                                        | [Phase3-Streaming-gRPC-WebSockets.md](docs/Phase3-Streaming-gRPC-WebSockets.md) |
+| **Phase 4** | Complete      | Kubernetes, StatefulSets                                                                          | [Phase4-Kubernetes-Deployment.md](docs/Phase4-Kubernetes-Deployment.md)         |
 | **Phase 5** | Partial (70%) | ClickHouse , Canary , Metrics instrumentation <br>Prom/Graf deployment [X] (resource constraints) | [Phase5-Observability-Canary.md](docs/Phase5-Observability-Canary.md)           |
 
 ### Phase 5 Implementation Details
