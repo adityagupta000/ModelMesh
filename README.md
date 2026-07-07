@@ -1,6 +1,6 @@
 # ModelMesh — Multi-Model Inference Gateway
 
-A production-grade ML serving platform featuring dynamic model registry, async job queues, real-time streaming, and Kubernetes orchestration.
+A multi-model inference gateway with dynamic model registry, async job queues, real-time streaming, and Kubernetes deployment.
 
 **Status**: Phases 1-4 Complete ║ Phase 5 Partial (ClickHouse ✓, Canary ✓, Prom/Graf ✗)
 
@@ -16,8 +16,8 @@ ModelMesh is a horizontally scalable inference gateway designed for multi-model 
 - **Async Job Queue**: Redis Streams with consumer groups + Kafka alternative
 - **Real-Time Streaming**: WebSocket endpoints with bidirectional gRPC backend
 - **Kubernetes Native**: StatefulSets, PVCs, multi-service containers, autoscaling-ready
-- **Observability**: ClickHouse analytics, Prometheus metrics, canary deployment support
-- **Production Hardened**: JWT auth, API key management, rate limiting, retry logic, DLQ
+- **Observability**: ClickHouse analytics, Prometheus metrics instrumentation, canary routing logic
+- **Core Features**: JWT auth, API key management, rate limiting, retry logic, DLQ
 
 ### Tech Stack
 
@@ -73,9 +73,9 @@ docker compose up --build
 
 Gateway available at `http://localhost:8000` | Docs: `http://localhost:8000/docs`
 
-### Kubernetes (Production)
+### Kubernetes (minikube)
 
-See [Phase 4 Documentation](docs/Phase4-Kubernetes-Deployment.md) for minikube setup and manifest deployment.
+See [Phase 4 Documentation](docs/Phase4-Kubernetes-Deployment.md) for local minikube setup and manifest deployment.
 
 ---
 
@@ -442,3 +442,24 @@ modelmesh/
 ├── docker-compose.yml
 └── README.md
 ```
+
+---
+
+## Limitations & Scope
+
+**What this is:**
+- Development/learning project demonstrating ML serving architecture
+- Tested on Docker Compose and local minikube only
+- Built to showcase registry-driven design patterns
+
+**What this is NOT:**
+- Production-ready (secrets committed to git, no TLS, no external monitoring deployment)
+- Tested at scale (minikube: 2 CPU / 4GB RAM)
+- Multi-tenant ready (basic auth, no isolation)
+
+**Known gaps:**
+- Kubernetes secrets committed to repo (NOT production-safe)
+- Prometheus + Grafana instrumented but not deployed (resource constraints)
+- No Ingress controller or TLS
+- No CI/CD pipeline
+- Tested with small payloads only
