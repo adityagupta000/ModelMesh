@@ -5,6 +5,7 @@ import os
 import time
 from redis.asyncio import Redis
 from inference import extract_text
+from metrics import log_metric
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -33,29 +34,28 @@ async def update_job_status(redis: Redis, job_id: str, status: str, result: dict
 
 
 async def handle_job(redis: Redis, job_data: dict, entry_id: str) -> bool:
-    """
-    Process a single job.
-
-    Returns:
-        bool: True if successful, False if should retry
-    """
     job_id = job_data["job_id"]
     payload = job_data["payload"]
+    model_id = job_data.get("model_id", "")
+    model_name = job_data.get("model_name", "")
+    model_version = job_data.get("model_version", "")
 
     try:
         logger.info(f"Processing job {job_id}")
         await update_job_status(redis, job_id, "processing")
 
-        # Run inference
+        start = time.perf_counter()
         result = extract_text(payload)
+        latency_ms = int((time.perf_counter() - start) * 1000)
 
-        # Store result
         await update_job_status(redis, job_id, "success", result=result)
-        logger.info(f"Job {job_id} completed successfully")
+        log_metric(job_id, model_id, model_name, model_version, WORKER_NAME, "success", latency_ms)
+        logger.info(f"Job {job_id} completed successfully ({latency_ms}ms)")
         return True
 
     except Exception as e:
         logger.error(f"Job {job_id} failed: {e}")
+        log_metric(job_id, model_id, model_name, model_version, WORKER_NAME, "error", 0)
         return False
 
 
