@@ -156,62 +156,119 @@ curl -X PATCH http://localhost:8000/v1/models/<model-id> \
 
 ---
 
-## Architecture
+## System Architecture
+
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        Client[Client Application]
+        WSClient[WebSocket Client]
+    end
+
+    subgraph "Gateway Service — K8s Deployment"
+        Gateway[FastAPI Gateway<br/>Port 8000]
+        Auth[JWT + API Key Auth]
+        RateLimit[Rate Limiter]
+        Registry[Model Registry]
+        Canary[Canary Router]
+        JobQueue[Job Queue Manager]
+        WSHandler[WebSocket Handler]
+    end
+
+    subgraph "Metadata Store"
+        Postgres[(PostgreSQL<br/>Users, Keys, Models)]
+    end
+
+    subgraph "Queue Layer"
+        RedisStreams[Redis Streams<br/>Consumer Groups]
+        RedisCache[Redis Cache<br/>Results + Rate Limits]
+    end
+
+    subgraph "Worker Services — K8s Deployment"
+        Consumer1[Redis Consumer]
+        Consumer2[Redis Consumer]
+        DocOCR[doc-ocr-worker<br/>HTTP:8001 gRPC:50051]
+        ASR[asr-worker<br/>HTTP:8002 gRPC:50052]
+    end
+
+    subgraph "Analytics"
+        ClickHouse[(ClickHouse<br/>Request Analytics)]
+    end
+
+    %% Client entry
+    Client -->|"HTTP/REST + Poll status"| Gateway
+    WSClient <-->|"WebSocket, real-time"| WSHandler
+
+    %% Gateway internal flow
+    Gateway --> Auth --> RateLimit --> Registry --> Canary --> JobQueue
+
+    %% Gateway to metadata store
+    Auth --> Postgres
+    Registry --> Postgres
+
+    %% Async job path
+    JobQueue -->|Enqueue| RedisStreams
+    RedisStreams -->|Pull jobs| Consumer1
+    RedisStreams -->|Pull jobs| Consumer2
+    Consumer1 --> DocOCR
+    Consumer2 --> ASR
+
+    %% Results + cache (single line each, no separate return arrow)
+    DocOCR -->|"Store result"| RedisCache
+    ASR -->|"Store result"| RedisCache
+    RedisCache -.->|"Fetch result"| Gateway
+
+    %% Streaming path
+    WSHandler -->|"Registry lookup"| Registry
+    WSHandler <-->|"gRPC stream, bidirectional"| DocOCR
+    WSHandler <-->|"gRPC stream, bidirectional"| ASR
+
+    %% Metrics (single converging point, same rank as sources)
+    Gateway -.->|Metrics| ClickHouse
+    DocOCR -.->|Metrics| ClickHouse
+    ASR -.->|Metrics| ClickHouse
+
+    classDef default fill:#ffffff,stroke:#000000,stroke-width:1.5px,color:#000000
+```
+
+### Architecture Flow
+
+**Synchronous Path (Phase 1)**:
+Client → Auth → Rate Limit → Registry → Worker (HTTP) → Response
+
+**Async Queue Path (Phase 2)**:
+Client → Gateway (returns job_id) → Redis Streams → Worker Consumer → Result Cache → Client polls
+
+**Streaming Path (Phase 3)**:
+WebSocket Client → Gateway → Worker (gRPC bidirectional) → Real-time results
+
+**Kubernetes Deployment (Phase 4)**:
+All services deployed as Deployments/StatefulSets in `modelmesh` namespace with Services for internal DNS
+
+**Observability (Phase 5)**:
+All requests logged to ClickHouse, Prometheus metrics exposed (not deployed), Canary routing via registry
+
+---
+
+## Per-Phase Architecture
 
 ### Phase 1: Core Gateway
-
-```
-Client → Gateway (FastAPI) → Worker (HTTP)
-         ↓
-         PostgreSQL (users, keys, models, requests)
-         Redis (rate limit, cache)
-```
 
 [Documentation](docs/Phase1-Core-Gateway.md)
 
 ### Phase 2: Async Job Queue
 
-```
-Client → Gateway → Redis Streams / Kafka → Workers
-         ↓                                    ↓
-         Returns job_id                       Process async
-                                              ↓
-Client polls /v1/jobs/{id} ← Redis result cache
-```
-
 [Documentation](docs/Phase2-Async-Job-Queue.md)
 
 ### Phase 3: Streaming + gRPC
-
-```
-Client → Gateway (WebSocket) → Worker (gRPC stream) → Partial results
-         Real-time push           Binary protocol
-
-Client → Gateway (HTTP) → Worker (gRPC unary) → Result
-```
 
 [Documentation](docs/Phase3-Streaming-gRPC-WebSockets.md)
 
 ### Phase 4: Kubernetes
 
-```
-Namespace: modelmesh
-  ├── Gateway (Deployment, replicas=2)
-  ├── Workers (Deployment, autoscaling)
-  ├── Postgres (StatefulSet, PVC)
-  ├── Redis (Deployment)
-  └── Services (ClusterIP, internal DNS)
-```
-
 [Documentation](docs/Phase4-Kubernetes-Deployment.md)
 
 ### Phase 5: Observability + Canary
-
-```
-Request → Gateway → ClickHouse (analytics)
-                 → Prometheus (metrics)
-                 → Canary routing (v1 90%, v2 10%)
-```
 
 [Documentation](docs/Phase5-Observability-Canary.md)
 
@@ -448,16 +505,19 @@ modelmesh/
 ## Limitations & Scope
 
 **What this is:**
+
 - Development/learning project demonstrating ML serving architecture
 - Tested on Docker Compose and local minikube only
 - Built to showcase registry-driven design patterns
 
 **What this is NOT:**
+
 - Production-ready (secrets committed to git, no TLS, no external monitoring deployment)
 - Tested at scale (minikube: 2 CPU / 4GB RAM)
 - Multi-tenant ready (basic auth, no isolation)
 
 **Known gaps:**
+
 - Kubernetes secrets committed to repo (NOT production-safe)
 - Prometheus + Grafana instrumented but not deployed (resource constraints)
 - No Ingress controller or TLS
