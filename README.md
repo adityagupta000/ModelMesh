@@ -4,7 +4,7 @@ A horizontally scalable ML serving platform demonstrating registry-driven archit
 
 **Status**: Phases 1-4 Complete ║ Phase 5 Partial (70%)
 
-📖 **[Setup Guide](SETUP.md)** | 📁 **[Documentation](docs/)**
+**[Setup Guide](SETUP.md)** | **[Documentation](docs/)**
 
 ---
 
