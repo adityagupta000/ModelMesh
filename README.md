@@ -1,158 +1,60 @@
 # ModelMesh — Multi-Model Inference Gateway
 
-A multi-model inference gateway with dynamic model registry, async job queues, real-time streaming, and Kubernetes deployment.
+A horizontally scalable ML serving platform demonstrating registry-driven architecture, async job queues, real-time streaming, and Kubernetes orchestration.
 
-**Status**: Phases 1-4 Complete ║ Phase 5 Partial (ClickHouse ✓, Canary ✓, Prom/Graf ✗)
+**Status**: Phases 1-4 Complete ║ Phase 5 Partial (70%)
 
----
-
-## Overview
-
-ModelMesh is a horizontally scalable inference gateway designed for multi-model serving workloads. Built from the ground up with a **registry-driven architecture**, it eliminates hardcoded model dependencies and enables zero-downtime deployments, protocol switching (HTTP ↔ gRPC), and traffic-based canary rollouts—all via API calls, not code changes.
-
-### Key Features
-
-- **Dynamic Model Registry**: Register, version, and route models via database lookups
-- **Async Job Queue**: Redis Streams with consumer groups + Kafka alternative
-- **Real-Time Streaming**: WebSocket endpoints with bidirectional gRPC backend
-- **Kubernetes Native**: StatefulSets, PVCs, multi-service containers, autoscaling-ready
-- **Observability**: ClickHouse analytics, Prometheus metrics instrumentation, canary routing logic
-- **Core Features**: JWT auth, API key management, rate limiting, retry logic, DLQ
-
-### Tech Stack
-
-- **Gateway**: FastAPI (Python 3.11+)
-- **Workers**: EasyOCR, Whisper (PyTorch-based models)
-- **Queue**: Redis Streams (default), Kafka (optional)
-- **Storage**: PostgreSQL (transactional), ClickHouse (analytical)
-- **Protocols**: HTTP/REST, WebSocket, gRPC/Protobuf
-- **Orchestration**: Docker Compose (dev), Kubernetes (prod)
+📖 **[Setup Guide](SETUP.md)** | 📁 **[Documentation](docs/)**
 
 ---
 
-## Quick Start
+## What is ModelMesh?
 
-### Prerequisites
+ModelMesh is an inference gateway built to solve a core problem in ML serving: **how do you add, version, and route between multiple models without constantly redeploying your gateway code?**
 
-**WSL2 Ubuntu required** (Windows users). Model caches split across filesystems if run on Windows Python.
+Most inference servers hardcode model names and endpoints. Adding a new model = code change + deployment. Switching protocols (HTTP → gRPC) = refactor. Canary rollouts = complex Kubernetes replica manipulation.
 
-#### 1. Install Models
+ModelMesh flips this: **all routing is data-driven**. Models live in a PostgreSQL registry. Adding a model is a `POST /v1/models` API call. Protocol switching is an `UPDATE` query. Canary rollouts are percentage fields in the database.
 
-```bash
-pip install easyocr openai-whisper
-sudo apt install ffmpeg -y  # Required for Whisper audio decoding
-```
-
-#### 2. Verify Downloads
-
-```bash
-python3 << 'EOF'
-import easyocr
-import whisper
-
-print("Downloading EasyOCR models...")
-ocr_reader = easyocr.Reader(['en'], gpu=False)
-print("EasyOCR ready")
-
-print("Downloading Whisper tiny model...")
-asr_model = whisper.load_model("tiny")
-print("Whisper ready")
-
-print("\nBoth models cached successfully (~140MB total)")
-EOF
-```
-
-Models cached to `~/.EasyOCR/model/` and `~/.cache/whisper/`. First run: 2-3 minutes. Subsequent: instant.
-
-### Docker Compose (Development)
-
-```bash
-cp .env.example .env  # Set JWT_SECRET
-docker compose up --build
-```
-
-Gateway available at `http://localhost:8000` | Docs: `http://localhost:8000/docs`
-
-### Kubernetes (minikube)
-
-See [Phase 4 Documentation](docs/Phase4-Kubernetes-Deployment.md) for local minikube setup and manifest deployment.
+This project implements a complete, working system demonstrating this pattern across 5 progressive phases.
 
 ---
 
-## Usage
+## Why This Architecture Matters
 
-### 1. Authentication
+### The Registry Pattern
 
-```bash
-# Register user
-curl -X POST http://localhost:8000/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email":"user@example.com","password":"secure_pass"}'
+Traditional approach:
 
-# Login (returns JWT)
-JWT=$(curl -X POST http://localhost:8000/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"user@example.com","password":"secure_pass"}' \
-  | jq -r .access_token)
-
-# Issue API key
-API_KEY=$(curl -X POST http://localhost:8000/v1/auth/api-keys \
-  -H "Authorization: Bearer $JWT" \
-  -H "Content-Type: application/json" \
-  -d '{"rate_limit_per_min": 100}' \
-  | jq -r .key)
+```python
+if model_name == "doc-ocr":
+    return http.post("http://ocr-worker:8001/infer", data)
+elif model_name == "asr":
+    return http.post("http://asr-worker:8002/infer", data)
 ```
 
-### 2. Inference (Async)
+Every new model requires code changes. Switching protocols requires refactoring. Versioning requires complex routing logic.
 
-```bash
-# Submit job
-JOB_ID=$(curl -X POST http://localhost:8000/v1/infer/doc-ocr \
-  -H "Authorization: Bearer $API_KEY" \
-  -F "file=@document.jpg" \
-  | jq -r .job_id)
+ModelMesh approach:
 
-# Poll status
-curl http://localhost:8000/v1/jobs/$JOB_ID \
-  -H "Authorization: Bearer $API_KEY"
+```python
+model = await registry.get_model(db, model_name)  # DB lookup
+return await route(model.endpoint, model.protocol, data)  # Generic routing
 ```
 
-### 3. Streaming (WebSocket)
+Adding a model:
 
 ```bash
-# Python CLI
-python test_ws_client.py $API_KEY asr audio.wav
-
-# Browser: Open test_ws_client.html
+POST /v1/models {"name": "new-model", "protocol": "grpc", "endpoint": "..."}
 ```
 
-### 4. Model Registry
+Switching protocols:
 
-```bash
-# List models
-curl http://localhost:8000/v1/models
-
-# Register new model (admin only)
-curl -X POST http://localhost:8000/v1/models \
-  -H "Authorization: Bearer $ADMIN_JWT" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "custom-nlp",
-    "version": "v1",
-    "worker_name": "nlp-worker",
-    "protocol": "grpc",
-    "endpoint": "nlp-worker:50051",
-    "description": "Custom NLP model"
-  }'
-
-# Update protocol (HTTP ↔ gRPC switch)
-curl -X PATCH http://localhost:8000/v1/models/<model-id> \
-  -H "Authorization: Bearer $ADMIN_JWT" \
-  -H "Content-Type: application/json" \
-  -d '{"protocol": "grpc", "endpoint": "doc-ocr-worker:50051"}'
+```sql
+UPDATE models SET protocol = 'grpc', endpoint = 'worker:50051' WHERE name = 'doc-ocr';
 ```
 
-**Zero gateway code changes.** All routing resolved via database.
+Zero code changes. Zero deployments. Just data.
 
 ---
 
@@ -213,7 +115,7 @@ graph TB
     Consumer1 --> DocOCR
     Consumer2 --> ASR
 
-    %% Results + cache (single line each, no separate return arrow)
+    %% Results + cache
     DocOCR -->|"Store result"| RedisCache
     ASR -->|"Store result"| RedisCache
     RedisCache -.->|"Fetch result"| Gateway
@@ -223,7 +125,7 @@ graph TB
     WSHandler <-->|"gRPC stream, bidirectional"| DocOCR
     WSHandler <-->|"gRPC stream, bidirectional"| ASR
 
-    %% Metrics (single converging point, same rank as sources)
+    %% Metrics
     Gateway -.->|Metrics| ClickHouse
     DocOCR -.->|Metrics| ClickHouse
     ASR -.->|Metrics| ClickHouse
@@ -231,274 +133,150 @@ graph TB
     classDef default fill:#ffffff,stroke:#000000,stroke-width:1.5px,color:#000000
 ```
 
-### Architecture Flow
-
-**Synchronous Path (Phase 1)**:
-Client → Auth → Rate Limit → Registry → Worker (HTTP) → Response
-
-**Async Queue Path (Phase 2)**:
-Client → Gateway (returns job_id) → Redis Streams → Worker Consumer → Result Cache → Client polls
-
-**Streaming Path (Phase 3)**:
-WebSocket Client → Gateway → Worker (gRPC bidirectional) → Real-time results
-
-**Kubernetes Deployment (Phase 4)**:
-All services deployed as Deployments/StatefulSets in `modelmesh` namespace with Services for internal DNS
-
-**Observability (Phase 5)**:
-All requests logged to ClickHouse, Prometheus metrics exposed (not deployed), Canary routing via registry
-
----
-
-## Per-Phase Architecture
-
-### Phase 1: Core Gateway
-
-[Documentation](docs/Phase1-Core-Gateway.md)
-
-### Phase 2: Async Job Queue
-
-[Documentation](docs/Phase2-Async-Job-Queue.md)
-
-### Phase 3: Streaming + gRPC
-
-[Documentation](docs/Phase3-Streaming-gRPC-WebSockets.md)
-
-### Phase 4: Kubernetes
-
-[Documentation](docs/Phase4-Kubernetes-Deployment.md)
-
-### Phase 5: Observability + Canary
-
-[Documentation](docs/Phase5-Observability-Canary.md)
-
 ---
 
 ## Key Design Decisions
 
-### Registry-Driven Routing
+### 1. Registry-Driven Routing
 
-**Problem**: Hardcoded model names in gateway force code deploys for new models.
+**Problem**: Hardcoded model names force redeployments for every model addition.
 
-**Solution**: All routing resolved via `models` table lookup. Adding a model = `POST /v1/models`, not a code change.
+**Solution**: `models` table with name, version, worker_name, protocol, endpoint. Gateway resolves all routing via DB lookups.
 
 **Payoff**:
 
-- Phase 3: HTTP → gRPC switch is a `PATCH` request, not a deployment
-- Phase 5: Canary rollout is a database row insert, not K8s selector manipulation
+- Phase 3: HTTP → gRPC switch = `PATCH /v1/models/{id}`, not a code deploy
+- Phase 5: Canary rollout = INSERT new version row + set `canary_percent` field
 
-### Async Queue Architecture
+### 2. Async Queue Architecture
 
-**Trade-off**: Clients poll `/v1/jobs/{id}` (Phase 2) vs instant response (Phase 1).
+**Problem**: Synchronous inference blocks gateway capacity. Slow requests stall everything.
 
-**Gain**: Gateway never blocks. Workers scale independently. Automatic retries. No lost work on crashes.
+**Solution**: Gateway enqueues jobs to Redis Streams, returns job_id immediately. Workers pull from queue at their own pace.
 
-**Mitigation**: Phase 3 adds WebSockets to eliminate polling while keeping queue benefits.
+**Payoff**:
 
-### Multi-Service Containers
+- Gateway never blocks
+- Workers scale independently (3 replicas = 3x throughput)
+- Automatic retries + DLQ for failed jobs
+- Idempotent processing (worker crash = safe redelivery)
 
-Workers run **3 services concurrently**:
+**Trade-off**: Clients poll `/v1/jobs/{id}` instead of instant response (Phase 3 adds WebSockets to fix this)
 
-1. HTTP server (port 8001) — Phase 1 legacy
-2. gRPC server (port 50051) — Phase 3
-3. Redis consumer (foreground) — Phase 2
+### 3. Multi-Service Containers
 
-**Why not separate pods?** Shared model weights in memory. Splitting = 3x memory footprint.
+**Problem**: Splitting HTTP + gRPC + Redis consumer into separate pods = 3x memory (model weights loaded 3 times).
 
-**How?** Entrypoint script backgrounds HTTP/gRPC, runs consumer in foreground. Container death = consumer crash (intentional).
+**Solution**: Single container runs all 3 services concurrently. Entrypoint script backgrounds HTTP and gRPC servers, runs consumer in foreground.
+
+**Payoff**: 1.5GB model weights loaded once, not 3 times. Container death = consumer crash (intentional).
+
+### 4. Protocol Abstraction
+
+```python
+async def route_request(endpoint: str, protocol: str, payload: bytes):
+    if protocol == "http":
+        return await http_client.post(endpoint, data=payload)
+    elif protocol == "grpc":
+        return await grpc_client.call(endpoint, payload)
+```
+
+Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All existing HTTP paths kept working.
 
 ---
 
-## Testing
+## What Was Built
 
-### Unit + Integration Tests
+### Phase 1: Core Gateway ([docs](docs/Phase1-Core-Gateway.md))
 
-```bash
-docker compose up postgres redis -d
-psql postgresql://user:pass@localhost/postgres -c "CREATE DATABASE modelmesh_test;"
-psql postgresql://user:pass@localhost/modelmesh_test < db/init.sql
+- Dynamic model registry (PostgreSQL)
+- JWT auth + API key management
+- Redis rate limiting (sliding window)
+- Request logging with latency tracking
+- Two workers: EasyOCR (doc-ocr) + Whisper (asr)
 
-pip install -r tests/requirements.txt
-pytest
-```
+### Phase 2: Async Job Queue ([docs](docs/Phase2-Async-Job-Queue.md))
 
-### Load Testing (Artillery)
+- Redis Streams job queue with consumer groups
+- Kafka alternative implementation (KRaft mode)
+- Exponential backoff retry logic (2s, 4s, 8s)
+- Dead-letter queue for failed jobs
+- Consumer lag monitoring (XLEN, XPENDING)
+- Horizontal worker scaling
 
-```bash
-npm install -g artillery
+### Phase 3: Streaming + gRPC ([docs](docs/Phase3-Streaming-gRPC-WebSockets.md))
 
-# Create load-test-vars.csv with valid API key
-echo "apiKey" > load-test-vars.csv
-echo "$API_KEY" >> load-test-vars.csv
+- WebSocket endpoint for real-time streaming
+- gRPC with Protocol Buffers for internal communication
+- Bidirectional streaming RPC (PredictStream)
+- Protocol abstraction in registry (HTTP ↔ gRPC switchable)
+- Multi-service containers (HTTP + gRPC + Redis consumer)
 
-artillery run load-test.yml
-```
+### Phase 4: Kubernetes ([docs](docs/Phase4-Kubernetes-Deployment.md))
 
-Captures p50/p95/p99 latency across phases for performance regression tracking.
+- Namespace isolation (`modelmesh`)
+- StatefulSet for Postgres with PersistentVolume
+- Deployments for Gateway, Workers, Redis
+- ConfigMaps for Postgres init SQL
+- Secrets for JWT + DB passwords
+- Resource requests/limits + health probes
+- Tested on minikube (2 CPU / 4GB RAM)
 
----
+### Phase 5: Observability + Canary ([docs](docs/Phase5-Observability-Canary.md))
 
-## Deployment
+**Implemented (70%)**:
 
-### Docker Compose (Local Development)
-
-```bash
-docker compose up --build
-```
-
-Includes: Gateway, 2 workers, Postgres, Redis. Hot-reload enabled on gateway.
-
-### Kubernetes (Production)
-
-#### Minikube (Local)
-
-```bash
-minikube start --cpus=2 --memory=4096
-minikube addons enable metrics-server
-
-eval $(minikube docker-env)
-docker build -t modelmesh-gateway:latest -f gateway/Dockerfile .
-docker build -t modelmesh-doc-ocr:latest -f workers/doc_ocr/Dockerfile .
-docker build -t modelmesh-asr:latest -f workers/asr/Dockerfile .
-
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/secrets.yaml
-kubectl apply -f k8s/redis/
-kubectl apply -f k8s/postgres/4
-kubectl apply -f k8s/gateway/
-kubectl apply -f k8s/workers/
-
-kubectl port-forward -n modelmesh svc/gateway 8000:80
-```
-
-#### Cloud (GKE/EKS/AKS)
-
-1. Replace `imagePullPolicy: Never` with `Always` in deployments
-2. Push images to container registry (GCR/ECR/ACR)
-3. Replace `secrets.yaml` with external secret manager
-4. Add Ingress + TLS via cert-manager
-5. Enable HPA (Horizontal Pod Autoscaler)
-
-See [Production Readiness](docs/Phase4-Kubernetes-Deployment.md#next-steps-production-readiness) for complete checklist.
-
----
-
-## Monitoring
-
-### Redis Streams
-
-```bash
-docker compose exec redis redis-cli
-
-XLEN inference_jobs              # Queue depth
-XPENDING inference_jobs doc-ocr-worker_group  # Pending jobs
-XREAD COUNT 10 STREAMS inference_jobs_dlq 0   # Dead-letter queue
-```
-
-### Kubernetes
-
-```bash
-kubectl get pods -n modelmesh -w
-kubectl logs -n modelmesh -f deployment/gateway
-kubectl top pods -n modelmesh
-```
-
-### ClickHouse Analytics (Phase 5)
-
-```sql
-SELECT model_name, model_version,
-       count() as requests,
-       avg(latency_ms),
-       quantile(0.95)(latency_ms) as p95
-FROM request_metrics
-WHERE timestamp > now() - INTERVAL 1 HOUR
-GROUP BY model_name, model_version;
-```
-
----
-
-## Phase Implementation Status
-
-| Phase       | Status        | Features                                                                                          | Documentation                                                                   |
-| ----------- | ------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| **Phase 1** | Complete      | Core gateway, registry, auth                                                                      | [Phase1-Core-Gateway.md](docs/Phase1-Core-Gateway.md)                           |
-| **Phase 2** | Complete      | Async queue, retry, DLQ                                                                           | [Phase2-Async-Job-Queue.md](docs/Phase2-Async-Job-Queue.md)                     |
-| **Phase 3** | Complete      | WebSocket, gRPC, streaming                                                                        | [Phase3-Streaming-gRPC-WebSockets.md](docs/Phase3-Streaming-gRPC-WebSockets.md) |
-| **Phase 4** | Complete      | Kubernetes, StatefulSets                                                                          | [Phase4-Kubernetes-Deployment.md](docs/Phase4-Kubernetes-Deployment.md)         |
-| **Phase 5** | Partial (70%) | ClickHouse , Canary , Metrics instrumentation <br>Prom/Graf deployment [X] (resource constraints) | [Phase5-Observability-Canary.md](docs/Phase5-Observability-Canary.md)           |
-
-### Phase 5 Implementation Details
-
-**What's Complete:**
-
-- ClickHouse Kubernetes deployment + service
-- `request_metrics` table with columnar storage (MergeTree engine)
+- ClickHouse request analytics (columnar storage, MergeTree engine)
 - Fire-and-forget metric logging (never blocks inference)
-- Canary routing logic (`canary_percent` field, registry-driven traffic splitting)
+- Canary routing logic (`canary_percent` field in registry)
 - Version pinning support (`?version=v1` bypasses canary)
-- Prometheus metrics instrumentation (Counter, Histogram with model_name/model_version labels)
-- `/metrics` endpoints exposed on all services
-- Verified via ClickHouse SQL queries and canary split testing
+- Prometheus metrics instrumentation (Counter, Histogram with labels)
+- `/metrics` endpoints exposed
 
-**What's Not Deployed (and Why):**
+**Not Deployed**:
 
-- **Prometheus + Grafana pods**: Intentionally scoped out due to minikube resource constraints
-  - **Environment**: WSL2 Ubuntu with 7.6GB host RAM
-  - **Minikube allocation**: 2 CPU / 4GB RAM (had to stop Docker Compose to free memory)
-  - **Current stack**: ClickHouse + Gateway + 2 Workers + Postgres + Redis ≈ 3.8GB
-  - **Adding Prom/Graf**: Would require additional ~1-1.5GB, exceeding available memory
-  - **Verification approach**: Direct ClickHouse queries prove metrics pipeline works
-  - **Production note**: All instrumentation code is in place. Deploy Prom/Graf with `helm install` in environments with adequate resources—no code changes needed.
+- Prometheus + Grafana pods (scoped out due to minikube RAM constraints: 2 CPU / 4GB)
+- Instrumentation code is complete; just need to `helm install` in production
 
 ---
 
-## Project Structure
+## Tech Stack
 
-```
-modelmesh/
-├── gateway/
-│   ├── main.py              # FastAPI app, routes
-│   ├── auth.py              # JWT + API key verification
-│   ├── registry.py          # Model registry service
-│   ├── job_queue.py         # Redis Streams queue
-│   ├── grpc_client.py       # gRPC client
-│   ├── metrics.py           # ClickHouse logging
-│   └── requirements.txt
-├── workers/
-│   ├── doc_ocr/
-│   │   ├── inference.py     # EasyOCR wrapper
-│   │   ├── consumer.py      # Redis consumer
-│   │   ├── grpc_server.py   # gRPC server
-│   │   └── entrypoint.sh    # Multi-service startup
-│   └── asr/
-│       ├── inference.py     # Whisper wrapper
-│       ├── consumer.py      # Redis consumer
-│       ├── grpc_server.py   # gRPC server (streaming)
-│       └── entrypoint.sh
-├── k8s/                     # Kubernetes manifests
-│   ├── namespace.yaml
-│   ├── secrets.yaml
-│   ├── gateway/
-│   ├── workers/
-│   ├── postgres/
-│   ├── redis/
-│   └── clickhouse/
-├── db/
-│   └── init.sql             # Database schema
-├── docs/                    # Phase documentation
-│   ├── Phase1-Core-Gateway.md
-│   ├── Phase2-Async-Job-Queue.md
-│   ├── Phase3-Streaming-gRPC-WebSockets.md
-│   ├── Phase4-Kubernetes-Deployment.md
-│   └── Phase5-Observability-Canary.md
-├── tests/
-│   ├── test_auth.py
-│   ├── test_registry.py
-│   └── test_workers.py
-├── inference.proto          # gRPC contract
-├── docker-compose.yml
-└── README.md
-```
+| Component         | Technology                          | Purpose                                |
+| ----------------- | ----------------------------------- | -------------------------------------- |
+| **Gateway**       | FastAPI (Python 3.11+)              | HTTP/WebSocket API server              |
+| **Workers**       | EasyOCR, Whisper                    | Pretrained PyTorch models              |
+| **Queue**         | Redis Streams, Kafka                | Async job distribution                 |
+| **Metadata**      | PostgreSQL                          | Users, keys, models, requests          |
+| **Analytics**     | ClickHouse                          | Request metrics, per-version breakdown |
+| **Protocols**     | HTTP/REST, WebSocket, gRPC/Protobuf | Client and internal communication      |
+| **Orchestration** | Docker Compose, Kubernetes          | Dev and local deployment               |
+
+---
+
+## What This Demonstrates
+
+**Architecture Patterns**:
+
+- Registry-driven routing (eliminates hardcoded dependencies)
+- Async queue decoupling (gateway never blocks)
+- Protocol abstraction (HTTP/gRPC switchable via data)
+- Multi-service containers (memory-efficient deployment)
+- Canary deployments without K8s complexity
+
+**Engineering Skills**:
+
+- API design (FastAPI, REST, WebSocket, gRPC)
+- Queue systems (Redis Streams, Kafka, consumer groups)
+- Database design (transactional + analytical workloads)
+- Kubernetes manifests (StatefulSets, PVCs, Services)
+- Observability (ClickHouse analytics, Prometheus metrics)
+
+**System Thinking**:
+
+- Trade-offs documented (async vs sync, HTTP vs gRPC, Redis vs Kafka)
+- Failure modes handled (retry logic, DLQ, idempotency)
+- Honest scope (production gaps clearly stated)
 
 ---
 
@@ -512,7 +290,7 @@ modelmesh/
 
 **What this is NOT:**
 
-- Production-ready (secrets committed to git, no TLS, no external monitoring deployment)
+- Production-ready (secrets committed to git, no TLS, no external monitoring)
 - Tested at scale (minikube: 2 CPU / 4GB RAM)
 - Multi-tenant ready (basic auth, no isolation)
 
@@ -523,3 +301,68 @@ modelmesh/
 - No Ingress controller or TLS
 - No CI/CD pipeline
 - Tested with small payloads only
+
+---
+
+## Project Structure
+
+```
+modelmesh/
+├── gateway/                 # FastAPI gateway + registry
+│   ├── main.py
+│   ├── registry.py
+│   ├── job_queue.py
+│   ├── grpc_client.py
+│   └── metrics.py
+├── workers/                 # Model workers
+│   ├── doc_ocr/            # EasyOCR (HTTP + gRPC + consumer)
+│   └── asr/                # Whisper (HTTP + gRPC + consumer)
+├── k8s/                    # Kubernetes manifests
+│   ├── gateway/
+│   ├── workers/
+│   ├── postgres/
+│   ├── redis/
+│   └── clickhouse/
+├── docs/                   # Phase documentation
+│   ├── Phase1-Core-Gateway.md
+│   ├── Phase2-Async-Job-Queue.md
+│   ├── Phase3-Streaming-gRPC-WebSockets.md
+│   ├── Phase4-Kubernetes-Deployment.md
+│   └── Phase5-Observability-Canary.md
+├── inference.proto         # gRPC contract
+├── docker-compose.yml
+├── SETUP.md               # Setup instructions
+└── README.md              # This file
+```
+
+---
+
+## Quick Start
+
+```bash
+# Docker Compose
+docker compose up --build
+
+# Kubernetes (minikube)
+minikube start --cpus=2 --memory=4096
+eval $(minikube docker-env)
+# ... build images and kubectl apply
+
+# See SETUP.md for detailed instructions
+```
+
+**Full setup guide**: [SETUP.md](SETUP.md)
+
+---
+
+## Documentation
+
+| Document                                            | Description                                                   |
+| --------------------------------------------------- | ------------------------------------------------------------- |
+| [SETUP.md](SETUP.md)                                | Complete setup instructions for Docker Compose and Kubernetes |
+| [Phase 1](docs/Phase1-Core-Gateway.md)              | Core gateway + model registry                                 |
+| [Phase 2](docs/Phase2-Async-Job-Queue.md)           | Async job queues (Redis Streams + Kafka)                      |
+| [Phase 3](docs/Phase3-Streaming-gRPC-WebSockets.md) | WebSockets + gRPC streaming                                   |
+| [Phase 4](docs/Phase4-Kubernetes-Deployment.md)     | Kubernetes deployment on minikube                             |
+| [Phase 5](docs/Phase5-Observability-Canary.md)      | ClickHouse analytics + canary routing                         |
+
