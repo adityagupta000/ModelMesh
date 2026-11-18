@@ -2,9 +2,9 @@
 
 A horizontally scalable ML serving platform demonstrating registry-driven architecture, async job queues, real-time streaming, and Kubernetes orchestration.
 
-**Status**: Phases 1-4 Complete ║ Phase 5 Partial (70%)
+**Status**: Development implementation; known gaps and current behavior are documented below.
 
-📖 **[Setup Guide](SETUP.md)** | 📁 **[Documentation](docs/)**
+📖 **[Setup Guide](SETUP.md)** | ▶️ **[Run and stop ModelMesh](RUNNING.md)** | 📁 **[Documentation](docs/)**
 
 ---
 
@@ -83,7 +83,7 @@ graph TB
 
     subgraph "Queue Layer"
         RedisStreams[Redis Streams<br/>Consumer Groups]
-        RedisCache[Redis Cache<br/>Results + Rate Limits]
+        RedisStore[Redis<br/>Job Results + Rate Limits]
     end
 
     subgraph "Worker Services — K8s Deployment"
@@ -93,7 +93,7 @@ graph TB
         ASR[asr-worker<br/>HTTP:8002 gRPC:50052]
     end
 
-    subgraph "Analytics"
+    subgraph "Analytics — Kubernetes only"
         ClickHouse[(ClickHouse<br/>Request Analytics)]
     end
 
@@ -116,9 +116,9 @@ graph TB
     Consumer2 --> ASR
 
     %% Results + cache
-    DocOCR -->|"Store result"| RedisCache
-    ASR -->|"Store result"| RedisCache
-    RedisCache -.->|"Fetch result"| Gateway
+    DocOCR -->|"Store result"| RedisStore
+    ASR -->|"Store result"| RedisStore
+    RedisStore -.->|"Fetch result"| Gateway
 
     %% Streaming path
     WSHandler -->|"Registry lookup"| Registry
@@ -126,9 +126,7 @@ graph TB
     WSHandler <-->|"gRPC stream, bidirectional"| ASR
 
     %% Metrics
-    Gateway -.->|Metrics| ClickHouse
     DocOCR -.->|Metrics| ClickHouse
-    ASR -.->|Metrics| ClickHouse
 
     classDef default fill:#ffffff,stroke:#000000,stroke-width:1.5px,color:#000000
 ```
@@ -158,8 +156,7 @@ graph TB
 
 - Gateway never blocks
 - Workers scale independently (3 replicas = 3x throughput)
-- Automatic retries + DLQ for failed jobs
-- Idempotent processing (worker crash = safe redelivery)
+- Retries + DLQ for failed jobs
 
 **Trade-off**: Clients poll `/v1/jobs/{id}` instead of instant response (Phase 3 adds WebSockets to fix this)
 
@@ -167,9 +164,9 @@ graph TB
 
 **Problem**: Splitting HTTP + gRPC + Redis consumer into separate pods = 3x memory (model weights loaded 3 times).
 
-**Solution**: Single container runs all 3 services concurrently. Entrypoint script backgrounds HTTP and gRPC servers, runs consumer in foreground.
+**Solution**: A worker container starts the HTTP server, gRPC server, and Redis consumer as separate processes. The processes do not share in-memory model instances.
 
-**Payoff**: 1.5GB model weights loaded once, not 3 times. Container death = consumer crash (intentional).
+**Trade-off**: Each process can load its own model instance; running services in one container does not mean model weights are loaded only once.
 
 ### 4. Protocol Abstraction
 
@@ -191,14 +188,13 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 
 - Dynamic model registry (PostgreSQL)
 - JWT auth + API key management
-- Redis rate limiting (sliding window)
-- Request logging with latency tracking
+- Redis rate limiting (fixed window)
 - Two workers: EasyOCR (doc-ocr) + Whisper (asr)
 
 ### Phase 2: Async Job Queue ([docs](docs/Phase2-Async-Job-Queue.md))
 
 - Redis Streams job queue with consumer groups
-- Kafka alternative implementation (KRaft mode)
+- Dormant Kafka alternative code (not wired into the application or Compose)
 - Exponential backoff retry logic (2s, 4s, 8s)
 - Dead-letter queue for failed jobs
 - Consumer lag monitoring (XLEN, XPENDING)
@@ -224,19 +220,18 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 
 ### Phase 5: Observability + Canary ([docs](docs/Phase5-Observability-Canary.md))
 
-**Implemented (70%)**:
+**Implemented**:
 
-- ClickHouse request analytics (columnar storage, MergeTree engine)
-- Fire-and-forget metric logging (never blocks inference)
+- Best-effort ClickHouse metric logging from the doc-ocr worker in Kubernetes
 - Canary routing logic (`canary_percent` field in registry)
 - Version pinning support (`?version=v1` bypasses canary)
-- Prometheus metrics instrumentation (Counter, Histogram with labels)
-- `/metrics` endpoints exposed
 
-**Not Deployed**:
+**Not Implemented / Not Available**:
 
-- Prometheus + Grafana pods (scoped out due to minikube RAM constraints: 2 CPU / 4GB)
-- Instrumentation code is complete; just need to `helm install` in production
+- Prometheus instrumentation and `/metrics` endpoints
+- Prometheus and Grafana deployment
+- ClickHouse service in Docker Compose; Compose workers log a warning when metric writes fail
+- ASR worker metric logging
 
 ---
 
@@ -246,9 +241,9 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 | ----------------- | ----------------------------------- | -------------------------------------- |
 | **Gateway**       | FastAPI (Python 3.11+)              | HTTP/WebSocket API server              |
 | **Workers**       | EasyOCR, Whisper                    | Pretrained PyTorch models              |
-| **Queue**         | Redis Streams, Kafka                | Async job distribution                 |
+| **Queue**         | Redis Streams; dormant Kafka code   | Async job distribution                 |
 | **Metadata**      | PostgreSQL                          | Users, keys, models, requests          |
-| **Analytics**     | ClickHouse                          | Request metrics, per-version breakdown |
+| **Analytics**     | ClickHouse (Kubernetes only)        | Best-effort doc-ocr worker metrics      |
 | **Protocols**     | HTTP/REST, WebSocket, gRPC/Protobuf | Client and internal communication      |
 | **Orchestration** | Docker Compose, Kubernetes          | Dev and local deployment               |
 
@@ -267,14 +262,14 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 **Engineering Skills**:
 
 - API design (FastAPI, REST, WebSocket, gRPC)
-- Queue systems (Redis Streams, Kafka, consumer groups)
+- Queue systems (Redis Streams, consumer groups; dormant Kafka code)
 - Database design (transactional + analytical workloads)
 - Kubernetes manifests (StatefulSets, PVCs, Services)
-- Observability (ClickHouse analytics, Prometheus metrics)
+- Observability (best-effort doc-ocr ClickHouse metrics)
 
 **System Thinking**:
 
-- Trade-offs documented (async vs sync, HTTP vs gRPC, Redis vs Kafka)
+- Trade-offs documented (async vs sync, HTTP vs gRPC, Redis Streams vs dormant Kafka code)
 - Failure modes handled (retry logic, DLQ, idempotency)
 - Honest scope (production gaps clearly stated)
 
@@ -297,7 +292,8 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 **Known gaps:**
 
 - Kubernetes secrets committed to repo (NOT production-safe)
-- Prometheus + Grafana instrumented but not deployed (resource constraints)
+- Prometheus instrumentation and Prometheus/Grafana deployment are not implemented
+- ClickHouse is not included in Docker Compose; Compose metric writes produce warnings
 - No Ingress controller or TLS
 - No CI/CD pipeline
 - Tested with small payloads only
@@ -341,7 +337,7 @@ modelmesh/
 
 ```bash
 # Docker Compose
-docker compose up --build
+# See RUNNING.md for start, rebuild, stop, and resume commands.
 
 # Kubernetes (minikube)
 minikube start --cpus=2 --memory=4096
@@ -351,7 +347,7 @@ eval $(minikube docker-env)
 # See SETUP.md for detailed instructions
 ```
 
-**Full setup guide**: [SETUP.md](SETUP.md)
+**Full setup guide**: [SETUP.md](SETUP.md) | **[Run and stop ModelMesh](RUNNING.md)**
 
 ---
 
@@ -361,7 +357,7 @@ eval $(minikube docker-env)
 | --------------------------------------------------- | ------------------------------------------------------------- |
 | [SETUP.md](SETUP.md)                                | Complete setup instructions for Docker Compose and Kubernetes |
 | [Phase 1](docs/Phase1-Core-Gateway.md)              | Core gateway + model registry                                 |
-| [Phase 2](docs/Phase2-Async-Job-Queue.md)           | Async job queues (Redis Streams + Kafka)                      |
+| [Phase 2](docs/Phase2-Async-Job-Queue.md)           | Async job queue (Redis Streams; Kafka code is dormant)        |
 | [Phase 3](docs/Phase3-Streaming-gRPC-WebSockets.md) | WebSockets + gRPC streaming                                   |
 | [Phase 4](docs/Phase4-Kubernetes-Deployment.md)     | Kubernetes deployment on minikube                             |
 | [Phase 5](docs/Phase5-Observability-Canary.md)      | ClickHouse analytics + canary routing                         |

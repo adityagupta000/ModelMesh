@@ -2,7 +2,7 @@
 
 ## Implementation Status: COMPLETE ✓
 
-**Goal:** Two models, one gateway, fully authenticated, rate-limited, logged — routed entirely through a dynamic Model Registry.
+**Goal:** Two models, one gateway, authenticated and rate-limited, routed through a dynamic Model Registry.
 
 **Actual time:** Completed
 
@@ -15,9 +15,7 @@
 - EasyOCR document text extraction + Whisper speech-to-text
 - Dynamic Model Registry (zero hardcoded model names)
 - JWT auth + bcrypt passwords + hashed API keys
-- Redis rate limiting (sliding window per key)
-- Redis result caching (SHA256 payload keys)
-- Request logging with model_id + latency
+- Redis fixed-window rate limiting per key
 - Admin-only registry management endpoints
 - Docker Compose setup with health checks
 - pytest test suite
@@ -37,14 +35,11 @@ Client → Gateway (FastAPI) → Worker (HTTP)
 
 - [x] EasyOCR and Whisper working on real test files
 - [x] `docker compose up` brings up all services
-- [x] No hardcoded model types in gateway
 - [x] `/v1/infer/{model_name}` routes via registry
 - [x] All registry CRUD endpoints work
 - [x] Adding third model requires zero code changes
 - [x] Error handling (404 unknown, 503 disabled, 401 auth, 429 rate limit)
-- [x] Request logging with model_id and latency
-- [x] Redis cache for repeated requests
-- [x] pytest suite passes
+- [ ] pytest suite passes (see the Phase 0 baseline; test repairs are in Phase 7)
 
 ---
 

@@ -13,21 +13,20 @@
 ### Core Features (All Complete)
 
 - Redis Streams job queue with consumer groups
-- Kafka alternative (KRaft mode, no Zookeeper)
+- Dormant Kafka alternative code (not wired into the application or Compose)
 - Async `/v1/infer/{model_name}` endpoint (returns job_id)
 - `/v1/jobs/{job_id}` polling endpoint
 - Workers filter by `worker_name` from registry
 - Retry logic: Max 3 retries, exponential backoff (2s, 4s, 8s)
 - Dead-letter queue (`inference_jobs_dlq`)
 - Consumer lag monitoring (XLEN, XPENDING)
-- Idempotent job processing
 - Job TTLs (1h status, 2h results)
 - Horizontal worker scaling
 
 ### Architecture
 
 ```
-Client → Gateway → Redis Streams / Kafka → Workers (async)
+Client → Gateway → Redis Streams → Workers (async)
          ↓                                    ↓
          Returns job_id                       Store result in Redis
 
@@ -45,8 +44,8 @@ Client polls /v1/jobs/{job_id} for result
 - [x] Retry logic with bounded retries + DLQ
 - [x] Consumer lag monitoring logged
 - [x] Stale model behavior documented
-- [x] Kafka alternative implementation
-- [x] Redis Streams vs Kafka comparison
+- [x] Kafka alternative code exists but is dormant and not wired/deployed
+- [x] Redis Streams is the queue used by the application; Kafka code is dormant
 
 ---
 
@@ -63,18 +62,18 @@ Client polls /v1/jobs/{job_id} for result
 
 **Stale model behavior**: Jobs enqueued before model disabled will still process. Disabling stops NEW jobs, not in-flight ones.
 
-**Redis Streams vs Kafka**: Default to Redis Streams (simpler ops). Kafka available for high-volume or multi-consumer scenarios.
+**Queue selection**: Redis Streams is wired into the application. Kafka-related code is present but is not wired or deployed.
 
 ---
 
 ## Files Implemented
 
-- `gateway/job_queue.py` - Redis Streams queue (renamed from `queue.py` to avoid Python builtin conflict)
-- `gateway/kafka_queue.py` - Kafka alternative
+- `gateway/job_queue.py` - Redis Streams queue
+- `gateway/kafka_queue.py` - Dormant Kafka alternative code
 - `workers/doc_ocr/consumer.py` - Redis consumer with retry logic
 - `workers/asr/consumer.py` - Redis consumer
-- `workers/doc_ocr/kafka_consumer.py` - Kafka consumer
-- `workers/asr/kafka_consumer.py` - Kafka consumer
+- `workers/doc_ocr/kafka_consumer.py` - Dormant Kafka consumer
+- `workers/asr/kafka_consumer.py` - Dormant Kafka consumer
 
 ---
 

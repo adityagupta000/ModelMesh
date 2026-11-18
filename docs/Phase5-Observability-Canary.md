@@ -1,11 +1,11 @@
 # Phase 5 — Observability + Canary Deployment
 
-## Implementation Status: PARTIAL (70% Complete)
+## Implementation Status: PARTIAL
 
-**Goal:** Full metrics pipeline (ClickHouse + Prometheus + Grafana) and registry-driven canary deployment.
+**Goal:** Best-effort ClickHouse metrics and registry-driven canary routing. Prometheus and Grafana are not implemented.
 
-**What's Done:** ClickHouse setup, metrics instrumentation, canary routing logic  
-**What's Missing:** Prometheus + Grafana (scoped out due to minikube resource constraints)
+**What's Done:** Kubernetes ClickHouse setup, doc-ocr worker metric logging, canary routing logic
+**What's Missing:** Compose ClickHouse, ASR metric logging, Prometheus instrumentation, and Grafana
 
 ---
 
@@ -15,9 +15,10 @@
 
 - ClickHouse Kubernetes deployment + service
 - `request_metrics` table schema (columnar, MergeTree engine)
-- Async metric logging from gateway and workers
+- Best-effort metric logging from the doc-ocr worker only
 - Fire-and-forget metric writes (never block inference)
-- Metrics include: model_name, model_version, worker_name, latency_ms, status
+- Metrics include: request_id, model_id, model_name, model_version, worker_name, latency_ms, status
+- Table DDL: [`clickhouse/init.sql`](../clickhouse/init.sql) (reconstructed; verify against a live table)
 
 ### Canary Routing Logic - COMPLETE
 
@@ -27,24 +28,19 @@
 - Version pinning support (`?version=v1` bypasses canary)
 - Tested with v1/v2 split, verified via ClickHouse queries
 
-### Prometheus Metrics Instrumentation - COMPLETE
+### Prometheus Metrics Instrumentation - NOT IMPLEMENTED
 
-- `prometheus-client` added to all services
-- Counter: `modelmesh_requests_total` (labels: model_name, model_version, status)
-- Histogram: `modelmesh_request_latency_ms` (labels: model_name, model_version)
-- Metrics endpoint `/metrics` exposed
+There is no Prometheus client instrumentation or `/metrics` endpoint in the current services.
 
 ---
 
 ## What Was NOT Implemented ✗
 
-### Prometheus + Grafana - SCOPED OUT
+### Prometheus + Grafana - NOT IMPLEMENTED
 
-**Reason**: Minikube resource constraints (2 CPU / 4GB RAM). With ClickHouse, gateway, Postgres, Redis, and workers running, no headroom for Prometheus + Grafana.
+Prometheus instrumentation, Prometheus, and Grafana are not included in the current implementation.
 
-**Workaround**: Direct ClickHouse SQL queries prove the data pipeline works. Grafana would add visualization layer without new verification value.
-
-**Production note**: In real deployment with adequate resources, Prometheus + Grafana should be added. Metrics instrumentation is already in place.
+ClickHouse metrics are Kubernetes-only. The Compose stack does not include ClickHouse; doc-ocr metric writes are skipped with a warning.
 
 ---
 
@@ -94,7 +90,7 @@ GROUP BY model_name, model_version;
 ### 4. Promote or Rollback
 
 - **Promote**: Increase `canary_percent` to 100, disable v1
-- **Rollback**: Set `canary_percent` to 0, disable v2
+- **Rollback**: Set `canary_percent` to 0. Do not disable v2 as part of rollback.
 
 Both via `PATCH /v1/models/{id}`. Zero code changes.
 
@@ -139,13 +135,13 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 
 - [x] ClickHouse deployment + service in Kubernetes
 - [x] `request_metrics` table with model_name, model_version, worker_name
-- [x] Every request logged to ClickHouse
-- [x] Prometheus metrics instrumented (labeled by model_name, model_version)
+- [x] doc-ocr worker jobs log best-effort metrics to ClickHouse when it is available
+- [ ] ASR worker metrics are not wired into its consumer (Phase 10)
+- [ ] Prometheus instrumentation and `/metrics` endpoints are not implemented
 - [x] `canary_percent` field in models table
 - [x] Registry-driven traffic splitting implemented
 - [x] Version pinning support (bypass canary)
-- [ ] Prometheus deployed and scraping (scoped out)
-- [ ] Grafana dashboard showing requests/sec, p95 latency, error rate (scoped out)
+- [ ] Prometheus and Grafana are not implemented
 - [x] Real canary test executed and verified
 - [x] Postmortem doc written
 
@@ -174,17 +170,16 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 
 **Why Skip Prometheus/Grafana?**
 
-- Resource constraints (minikube 4GB RAM)
-- ClickHouse queries prove data pipeline works
-- Visualization layer adds polish, not verification value
-- Production deployment should add them
+- Prometheus instrumentation and the Prometheus/Grafana services are not implemented.
+- ClickHouse metric writes are best-effort and currently called by doc-ocr only.
+- The Compose stack does not include ClickHouse.
 
 ---
 
 ## What Would Change with More Time
 
 1. **Deploy genuine v2**: Different preprocessing or confidence threshold, not same worker
-2. **Add Prometheus + Grafana**: Real-time dashboards (requires more resources)
+2. **Add Prometheus + Grafana**: Real-time dashboards and instrumentation (not implemented)
 3. **Automated rollback triggers**: Auto-disable v2 if error rate exceeds threshold
 4. **Statistical significance testing**: Don't promote on 1-2 samples, need real volume
 5. **Multi-model canary**: Test framework with multiple models simultaneously
@@ -197,8 +192,8 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 - `k8s/clickhouse/service.yaml` - ClickHouse service
 - `gateway/metrics.py` - ClickHouse metric logging
 - `workers/doc_ocr/metrics.py` - Worker metrics
-- `workers/asr/metrics.py` - Worker metrics
-- `gateway/main.py` - Updated with `get_model_with_canary()` + Prometheus metrics
+- `workers/asr/metrics.py` - Metrics helper exists but is not called by the ASR consumer
+- `gateway/main.py` - Includes `get_model_with_canary()`
 - `gateway/registry.py` - Added `canary_percent`, `list_versions()`
 - `gateway/schemas.py` - Updated Pydantic models
 
@@ -206,16 +201,15 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 
 ## Production Readiness
 
-**What's production-ready:**
+**What's currently implemented:**
 
-- ClickHouse data pipeline
+- Best-effort doc-ocr ClickHouse writes when ClickHouse is available
 - Canary routing logic
-- Metrics instrumentation
 - Fire-and-forget safety
 
 **What needs work:**
 
-- Prometheus + Grafana deployment
+- Prometheus instrumentation and Prometheus + Grafana deployment
 - Automated rollback rules
 - Statistical significance checks
 - Production secret management for ClickHouse
@@ -224,6 +218,6 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 
 ## Postmortem Summary
 
-Canary mechanism proven: registered v2, split traffic via registry, verified split in ClickHouse. Metrics pipeline works end-to-end. Prometheus/Grafana deferred due to resource constraints, but instrumentation in place for easy addition. Registry-driven approach (Phase 1's design) enabled zero-code canary rollout.
+Canary routing is registry-driven. ClickHouse writes are best-effort and currently called by doc-ocr only; ClickHouse is not in Compose. Prometheus instrumentation and Prometheus/Grafana are not implemented.
 
 **Interview talking point**: "Built a registry-driven canary system where promoting a new model version is an API call, not a code deploy. Metrics show per-version latency and error rates in ClickHouse. Scoped Grafana out due to local resource limits, but the hard part — data pipeline and routing logic — is done."

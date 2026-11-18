@@ -4,6 +4,8 @@
 
 Date: 2026-07-06
 
+> **Important caveat:** About 67% of requests returned 401/422 during the baseline. The latency figures below cover successful 2xx gateway job-acceptance requests only and should not be read as a success rate or end-to-end inference latency.
+
 ### Gateway response time (job acceptance, 2xx only)
 
 | Metric       | Value |
@@ -15,7 +17,6 @@ Date: 2026-07-06
 ### Notes
 
 - These numbers measure gateway enqueue latency, not end-to-end inference latency
-- ~67% of requests returned 401/422 (Artillery multipart file upload limitation)
 - 730 successful requests out of 2250 total
 - Async queue design: gateway returns job_id immediately, inference happens in background
 - Test: Artillery 5→20→100 req/sec ramp, OCR + ASR + list-models mixed scenarios
