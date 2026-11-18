@@ -108,7 +108,7 @@ Workers start THREE separate processes in one container:
 2. gRPC server (Phase 3, port 50051)
 3. Redis consumer (Phase 2, foreground)
 
-Achieved via entrypoint script backgrounding HTTP and gRPC servers, then running the Redis consumer in the foreground. These processes do not share in-memory model instances; each process can load its own model.
+Achieved via entrypoint script supervision of HTTP and gRPC servers and the Redis consumer. These processes do not share in-memory model instances; each process can load its own model. Compose measurements: ASR 819.6 MiB and doc-ocr 1.264 GiB at the Phase 9 idle checkpoint. Kubernetes figures were not available without a cluster.
 
 ---
 
