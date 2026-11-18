@@ -1,7 +1,7 @@
-import hashlib
 import json
 import time
 import random
+import re
 
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Header, WebSocket, WebSocketDisconnect
@@ -15,6 +15,7 @@ from auth import (
     decode_token,
     verify_api_key,
     verify_admin_key,
+    lookup_key,
     ApiKeyRecord,
 )
 from rate_limit import check_rate_limit
@@ -23,6 +24,7 @@ from job_queue import enqueue_job, get_job_status as _get_job_status
 from grpc_client import call_worker_grpc
 from schemas import (
     UserCreate,
+    LoginRequest,
     TokenResponse,
     ApiKeyCreate,
     ApiKeyResponse,
@@ -60,19 +62,8 @@ def _jwt_dep():
 
 async def route_request(endpoint: str, protocol: str, payload: bytes, filename: str = "file", model_name: str = ""):
     if protocol == "http":
-        # Determine content-type/filename so workers that validate MIME type
-        # (e.g. doc-ocr requiring image/*) don't reject the request.
-        if "ocr" in model_name:
-            content_type = "image/jpeg"
-            filename = filename if filename != "file" else "upload.jpg"
-        elif model_name == "asr":
-            content_type = "audio/wav"
-            filename = filename if filename != "file" else "upload.wav"
-        else:
-            content_type = "application/octet-stream"
-
         async with httpx.AsyncClient(timeout=30.0) as client:
-            files = {"file": (filename, payload, content_type)}
+            files = {"file": (filename, payload, "application/octet-stream")}
             resp = await client.post(endpoint, files=files)
             resp.raise_for_status()
             return resp.json()
@@ -84,21 +75,28 @@ async def route_request(endpoint: str, protocol: str, payload: bytes, filename: 
 
 async def get_model_with_canary(db, model_name: str):
     """
-    Registry-driven canary routing. When more than one active version of a
-    model exists, the highest version string is treated as the canary
-    candidate and routed to based on its own canary_percent field — no
-    hardcoded config, no separate dict, purely data-driven per Phase 1's
-    design principle.
+    Registry-driven canary routing. With two or more active versions, the
+    highest numeric version is the canary and the lowest numeric version is
+    stable; versions in between receive no traffic. A model with no active
+    version is disabled.
     """
     versions = await registry.list_versions(db, model_name)
     if not versions:
+        model = await registry.get_model(db, model_name)
+        if model is not None:
+            raise HTTPException(503, "Model is currently disabled")
         return None
     if len(versions) == 1:
         return versions[0]
-    canary = max(versions, key=lambda m: m.version)
-    stable = min(versions, key=lambda m: m.version)
+    canary = max(versions, key=_vnum)
+    stable = min(versions, key=_vnum)
     roll = random.randint(1, 100)
     return canary if roll <= canary.canary_percent else stable
+
+
+def _vnum(model) -> int:
+    found = re.search(r"\d+", model.version)
+    return int(found.group()) if found else 0
 
 
 # ── auth endpoints ────────────────────────────────────────────────────────────
@@ -119,7 +117,7 @@ async def register(payload: UserCreate):
 
 
 @app.post("/v1/auth/login", response_model=TokenResponse, tags=["auth"])
-async def login(payload: UserCreate):
+async def login(payload: LoginRequest):
     row = await database.fetch_one(
         "SELECT id, password_hash FROM users WHERE email = :email", {"email": payload.email}
     )
@@ -200,8 +198,6 @@ async def get_model_endpoint(name: str, version: str = "v1"):
 async def register_model_endpoint(
     payload: ModelRegistration, key: ApiKeyRecord = Depends(verify_admin_key)
 ):
-    if payload.protocol not in ("http", "grpc"):
-        raise HTTPException(400, "protocol must be 'http' or 'grpc'")
     try:
         model_id = await registry.register_model(database, **payload.model_dump())
     except Exception as exc:
@@ -244,9 +240,13 @@ async def health():
 async def ready():
     try:
         await database.fetch_one("SELECT 1")
+    except Exception as exc:
+        raise HTTPException(503, f"Not ready: Postgres unavailable: {exc}")
+    try:
+        await redis.ping()
         return {"status": "ready"}
-    except Exception as e:
-        raise HTTPException(503, f"Not ready: {e}")
+    except Exception as exc:
+        raise HTTPException(503, f"Not ready: Redis unavailable: {exc}")
 
 
 # ── WebSocket streaming endpoint ─────────────────────────────────────────────
@@ -273,10 +273,7 @@ async def ws_infer(websocket: WebSocket, model_name: str):
             return
 
         # Verify API key
-        key_record = await database.fetch_one(
-            "SELECT id, user_id, rate_limit_per_min FROM api_keys WHERE key_hash = :hash",
-            {"hash": hashlib.sha256(api_key.encode()).hexdigest()}
-        )
+        key_record = await lookup_key(database, api_key)
 
         if not key_record:
             await websocket.send_json({"error": "Invalid API key"})
@@ -284,7 +281,7 @@ async def ws_infer(websocket: WebSocket, model_name: str):
             return
 
         # Rate limiting
-        await check_rate_limit(key_record["id"], key_record["rate_limit_per_min"], redis)
+        await check_rate_limit(key_record.id, key_record.rate_limit_per_min, redis)
 
         # Resolve model from registry
         version = websocket.query_params.get("version", "v1")

@@ -1,6 +1,7 @@
 import os
 import secrets
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -13,6 +14,10 @@ from dataclasses import dataclass
 from db import database
 
 SECRET_KEY = os.getenv("JWT_SECRET", "change-me-in-production")
+if SECRET_KEY == "change-me-in-production":
+    logging.getLogger(__name__).warning(
+        "JWT_SECRET is using the insecure placeholder; set JWT_SECRET in production"
+    )
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
@@ -68,7 +73,7 @@ async def create_api_key(
     return raw_key
 
 
-async def _lookup_key(db: Database, raw_key: str) -> Optional[ApiKeyRecord]:
+async def lookup_key(db: Database, raw_key: str) -> Optional[ApiKeyRecord]:
     key_hash = _hash_key(raw_key)
     row = await db.fetch_one(
         "SELECT id, user_id, rate_limit_per_min, is_admin FROM api_keys WHERE key_hash = :h AND revoked = FALSE",
@@ -84,6 +89,9 @@ async def _lookup_key(db: Database, raw_key: str) -> Optional[ApiKeyRecord]:
     )
 
 
+_lookup_key = lookup_key
+
+
 def _extract_bearer(authorization: Optional[str]) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Missing or invalid Authorization header")
@@ -92,7 +100,7 @@ def _extract_bearer(authorization: Optional[str]) -> str:
 
 async def verify_api_key(authorization: Optional[str] = Header(None)) -> ApiKeyRecord:
     raw_key = _extract_bearer(authorization)
-    record = await _lookup_key(database, raw_key)
+    record = await lookup_key(database, raw_key)
     if not record:
         raise HTTPException(401, "Invalid or revoked API key")
     return record
