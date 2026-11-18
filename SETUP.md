@@ -205,28 +205,40 @@ curl -X PATCH http://localhost:8000/v1/models/<model-id> \
 
 ### Unit + Integration Tests
 
-Postgres and Redis ports are not published by the default Compose configuration. From Ubuntu WSL, create a temporary override to expose them to local test processes:
+The default Compose file does not publish Postgres or Redis ports. From Ubuntu WSL at the repository root, start Compose with the test-only override and use only the scratch database and Redis DB 1:
 
 ```bash
-cat > /tmp/compose.ports.yml <<'EOF'
-services:
-  postgres: { ports: ["5432:5432"] }
-  redis:    { ports: ["6379:6379"] }
-EOF
-docker compose -f docker-compose.yml -f /tmp/compose.ports.yml up -d postgres redis
-docker compose restart gateway doc-ocr-worker asr-worker
+cd /mnt/c/Project_Files/modelmesh
+docker compose -f docker-compose.yml -f docker-compose.test.yml up -d
+
+# Skip only this CREATE command if modelmesh_test already exists. Never drop it.
 docker compose exec -T postgres psql -U user -d postgres -c "CREATE DATABASE modelmesh_test;"
-docker compose exec -T postgres psql -U user -d modelmesh_test < db/init.sql
-for migration in migrations/*.sql; do
-  docker compose exec -T postgres psql -U user -d modelmesh_test < "$migration"
+docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U user -d modelmesh_test < db/init.sql
+for f in migrations/*.sql; do
+  docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U user -d modelmesh_test < "$f"
 done
 
-source modelmesh-env/bin/activate
+export TEST_DATABASE_URL=postgresql://user:pass@localhost/modelmesh_test
+export TEST_REDIS_URL=redis://localhost:6379/1
+source "$HOME/modelmesh/modelmesh-env/bin/activate"
+pip install --dry-run -r tests/requirements.txt
 pip install -r tests/requirements.txt
-pytest
+pytest -q
+pytest -q
+deactivate
 ```
 
-If `modelmesh_test` already exists, use a fresh test database name rather than dropping a database that may contain test data. After testing, restore the default Compose configuration with `docker compose up -d postgres redis`.
+If `modelmesh_test` already exists, keep it and use it as the scratch test database; skip only the `CREATE DATABASE` command. The idempotent schema and migration commands may be rerun; do not drop the database or use the application database `modelmesh`. The tests flush Redis DB 1 only. Test dependencies pin the existing NumPy 2.4.4 and OpenCV headless 5.0.0.93 versions; they do not downgrade them.
+
+The working WSL virtualenv must be on the Linux filesystem. On this workstation it is `$HOME/modelmesh/modelmesh-env`; a copy under `/mnt/c` can contain empty Python launcher files and should not be activated.
+
+Only the initial `up` needs both `-f` flags. After that, `docker compose ps`, `stop`, `start`, and `down` work normally. Plain `docker compose up -d` recreates Postgres and Redis without host ports, so use the override form again whenever tests need to connect. If Postgres or Redis are recreated while the app is running, reconnect the app services with:
+
+```bash
+docker compose restart gateway doc-ocr-worker asr-worker
+```
+
+The test harness generates protobuf modules into a temporary directory at startup; it does not add generated source files to the repository.
 
 ### Load Testing (Artillery)
 
