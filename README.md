@@ -14,9 +14,9 @@ ModelMesh is an inference gateway built to solve a core problem in ML serving: *
 
 Most inference servers hardcode model names and endpoints. Adding a new model = code change + deployment. Switching protocols (HTTP → gRPC) = refactor. Canary rollouts = complex Kubernetes replica manipulation.
 
-ModelMesh flips this: **all routing is data-driven**. Models live in a PostgreSQL registry. Adding a model is a `POST /v1/models` API call. Protocol switching is an `UPDATE` query. Canary rollouts are percentage fields in the database.
+ModelMesh stores model metadata in a PostgreSQL registry and uses it to assign asynchronous jobs to workers. The WebSocket path reads protocol and endpoint from the registry, but still contains model-name-specific branches; REST jobs do not use the registry protocol, and WebSocket inference does not use canary routing. Removing those remaining model-specific branches is planned for Phase 8.
 
-This project implements a complete, working system demonstrating this pattern across 5 progressive phases.
+This project provides a working inference baseline across five phases. Phase 5 observability is partial; Prometheus and Grafana are not implemented.
 
 ---
 
@@ -35,11 +35,11 @@ elif model_name == "asr":
 
 Every new model requires code changes. Switching protocols requires refactoring. Versioning requires complex routing logic.
 
-ModelMesh approach:
+ModelMesh approach (asynchronous REST job assignment):
 
 ```python
 model = await registry.get_model(db, model_name)  # DB lookup
-return await route(model.endpoint, model.protocol, data)  # Generic routing
+job = {"model_name": model.name, "worker_name": model.worker_name}
 ```
 
 Adding a model:
@@ -48,13 +48,15 @@ Adding a model:
 POST /v1/models {"name": "new-model", "protocol": "grpc", "endpoint": "..."}
 ```
 
-Switching protocols:
+This registers model metadata; a new inference type may still require code changes. Direct WebSocket inference currently has model-specific branches (Phase 8).
+
+Switching protocols for WebSocket inference (the REST job path ignores `protocol`):
 
 ```sql
 UPDATE models SET protocol = 'grpc', endpoint = 'worker:50051' WHERE name = 'doc-ocr';
 ```
 
-Zero code changes. Zero deployments. Just data.
+For WebSocket inference, this changes HTTP/gRPC without a code change or deployment.
 
 ---
 
@@ -115,7 +117,7 @@ graph TB
     Consumer1 --> DocOCR
     Consumer2 --> ASR
 
-    %% Results + cache
+    %% Job results
     DocOCR -->|"Store result"| RedisStore
     ASR -->|"Store result"| RedisStore
     RedisStore -.->|"Fetch result"| Gateway
@@ -139,12 +141,12 @@ graph TB
 
 **Problem**: Hardcoded model names force redeployments for every model addition.
 
-**Solution**: `models` table with name, version, worker_name, protocol, endpoint. Gateway resolves all routing via DB lookups.
+**Solution**: The `models` table stores name, version, worker_name, protocol, and endpoint. The asynchronous REST path resolves the worker from registry metadata; direct WebSocket inference still has model-name-specific branches (Phase 8).
 
 **Payoff**:
 
-- Phase 3: HTTP → gRPC switch = `PATCH /v1/models/{id}`, not a code deploy
-- Phase 5: Canary rollout = INSERT new version row + set `canary_percent` field
+- Phase 3: WebSocket protocol selection (HTTP or gRPC) reads registry data; REST jobs do not read the protocol field
+- Phase 5: REST canary rollout uses a new version row and `canary_percent`; WebSocket inference does not use canary routing
 
 ### 2. Async Queue Architecture
 
@@ -168,17 +170,9 @@ graph TB
 
 **Trade-off**: Each process can load its own model instance; running services in one container does not mean model weights are loaded only once.
 
-### 4. Protocol Abstraction
+### 4. Protocol Selection
 
-```python
-async def route_request(endpoint: str, protocol: str, payload: bytes):
-    if protocol == "http":
-        return await http_client.post(endpoint, data=payload)
-    elif protocol == "grpc":
-        return await grpc_client.call(endpoint, payload)
-```
-
-Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All existing HTTP paths kept working.
+The WebSocket path reads `protocol` and `endpoint` from the registry, then calls `route_request`. That function still contains model-name-specific branches; generic model dispatch is planned for Phase 8. The REST job path queues work and does not read the `protocol` field.
 
 ---
 
@@ -205,7 +199,7 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 - WebSocket endpoint for real-time streaming
 - gRPC with Protocol Buffers for internal communication
 - Bidirectional streaming RPC (PredictStream)
-- Protocol abstraction in registry (HTTP ↔ gRPC switchable)
+- WebSocket protocol selection from registry data (HTTP ↔ gRPC); REST jobs do not read `protocol`
 - Multi-service containers (HTTP + gRPC + Redis consumer)
 
 ### Phase 4: Kubernetes ([docs](docs/Phase4-Kubernetes-Deployment.md))
@@ -242,7 +236,7 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 | **Gateway**       | FastAPI (Python 3.11+)              | HTTP/WebSocket API server              |
 | **Workers**       | EasyOCR, Whisper                    | Pretrained PyTorch models              |
 | **Queue**         | Redis Streams; dormant Kafka code   | Async job distribution                 |
-| **Metadata**      | PostgreSQL                          | Users, keys, models, requests          |
+| **Metadata**      | PostgreSQL                          | Users, keys, models (the requests table is not currently written) |
 | **Analytics**     | ClickHouse (Kubernetes only)        | Best-effort doc-ocr worker metrics      |
 | **Protocols**     | HTTP/REST, WebSocket, gRPC/Protobuf | Client and internal communication      |
 | **Orchestration** | Docker Compose, Kubernetes          | Dev and local deployment               |
@@ -253,10 +247,10 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 
 **Architecture Patterns**:
 
-- Registry-driven routing (eliminates hardcoded dependencies)
+- Registry-driven worker assignment; direct WebSocket inference still has model-specific branches
 - Async queue decoupling (gateway never blocks)
-- Protocol abstraction (HTTP/gRPC switchable via data)
-- Multi-service containers (memory-efficient deployment)
+- WebSocket protocol selection from registry data (HTTP/gRPC)
+- Multi-process worker containers (HTTP + gRPC + Redis consumer)
 - Canary deployments without K8s complexity
 
 **Engineering Skills**:
