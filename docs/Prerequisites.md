@@ -138,11 +138,10 @@ minikube start
 - New concept: columnar storage and why `ORDER BY` in `MergeTree` tables matters for query performance — 30–60 minutes of reading is enough
 - `clickhouse-connect` Python client basics
 
-**Prometheus + Grafana:**
+**Prometheus + Grafana (optional future work; not implemented):**
 
-- Prometheus concept: pull-based scraping, metric types (Counter, Histogram, Gauge) — know the difference, you'll use both Counter and Histogram
-- PromQL basics: enough to write a p95 query and a rate() query
-- Grafana: how to add a data source and build a panel — this is mostly point-and-click, minimal study needed
+- The current services have no Prometheus instrumentation or `/metrics` endpoint. Learn pull-based scraping and metric types only if adding this later.
+- PromQL and Grafana dashboards are not needed to run or validate the current project; they are optional future work.
 
 **Canary deployment concept:**
 
@@ -151,10 +150,9 @@ minikube start
 **Install:**
 
 ```bash
-pip install clickhouse-connect prometheus-fastapi-instrumentator prometheus-client
+pip install clickhouse-connect  # only when working with the ClickHouse client locally
 
-# Prometheus + Grafana deployed via Helm (commands in Phase 5 doc)
-helm version   # install helm first if you don't have it
+# Prometheus and Grafana are not deployed by this repository; Helm is not needed for Phase 5.
 ```
 
 **Time estimate:** 1–2 days of learning, since this phase leans more on your existing SQL/dashboard instincts than genuinely new mental models.
@@ -169,7 +167,7 @@ helm version   # install helm first if you don't have it
 | 2     | Redis Streams concepts, optionally Kafka       | 0.5–1 day           |
 | 3     | WebSockets (light), gRPC + protobufs (heavy)   | 2–3 days            |
 | 4     | Kubernetes core concepts                       | 3–4 days            |
-| 5     | ClickHouse (light), Prometheus/Grafana (light) | 1–2 days            |
+| 5     | ClickHouse (light); Prometheus/Grafana optional future work | 1–2 days            |
 
 **Total standalone learning time: roughly 7–10 days**, on top of the 4–5 weeks of build time already estimated. Realistically, don't front-load all of this — learn gRPC right before Phase 3, learn Kubernetes right before Phase 4. Concepts you learn and don't immediately use fade fast; just-in-time learning will stick better and won't stall your momentum on Phase 1.
 

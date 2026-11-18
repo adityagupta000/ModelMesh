@@ -220,4 +220,4 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 
 Canary routing is registry-driven. ClickHouse writes are best-effort and currently called by doc-ocr only; ClickHouse is not in Compose. Prometheus instrumentation and Prometheus/Grafana are not implemented.
 
-**Interview talking point**: "Built a registry-driven canary system where promoting a new model version is an API call, not a code deploy. Metrics show per-version latency and error rates in ClickHouse. Scoped Grafana out due to local resource limits, but the hard part — data pipeline and routing logic — is done."
+**Interview talking point**: "Built registry-driven canary routing, so model-version traffic splits are controlled by registry data. The doc-ocr worker has best-effort ClickHouse metrics for request version, latency, and status; ClickHouse is not included in Docker Compose. Prometheus/Grafana and automated rollback are not implemented."
