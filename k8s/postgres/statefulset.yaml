@@ -21,7 +21,10 @@ spec:
             - name: POSTGRES_USER
               value: user
             - name: POSTGRES_PASSWORD
-              value: pass
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: postgres-password
           ports:
             - containerPort: 5432
           volumeMounts:
