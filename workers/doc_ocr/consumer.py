@@ -203,7 +203,7 @@ async def consume_loop():
                     CONSUMER,
                     {"inference_jobs": ">"},
                     count=1,
-                    block=5000,
+                    block=100,
                 )
                 lag_counter += 1
                 if lag_counter >= 10:
