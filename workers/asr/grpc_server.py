@@ -7,7 +7,7 @@ import os
 from concurrent import futures
 import inference_pb2
 import inference_pb2_grpc
-from inference import transcribe
+from inference import transcribe, _load_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -90,6 +90,7 @@ class InferenceWorkerServicer(inference_pb2_grpc.InferenceWorkerServicer):
 
 def serve(port=50051):
     """Start the gRPC server."""
+    _load_model()
     server = grpc.server(
         futures.ThreadPoolExecutor(max_workers=GRPC_MAX_WORKERS),
         options=[

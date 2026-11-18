@@ -4,7 +4,7 @@ import logging
 import os
 import time
 from redis.asyncio import Redis
-from inference import transcribe
+from inference import transcribe, _load_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -160,6 +160,7 @@ async def reclaim_stale(redis, group):
 
 
 async def consume_loop():
+    _load_model()
     redis = Redis.from_url(REDIS_URL, decode_responses=False)
     group = f"{WORKER_NAME}_group"
     try:
