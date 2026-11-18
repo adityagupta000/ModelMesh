@@ -105,3 +105,14 @@ async def test_expired_payload_is_permanent(consumer_module):
     assert isinstance(error, module.PermanentError)
     assert str(error) == "payload expired"
     assert elapsed_ms >= 0
+
+
+@pytest.mark.asyncio(scope="session")
+async def test_reclaim_stale_returns_to_zero(consumer_module):
+    module, inference = consumer_module
+    redis = AsyncMock()
+    redis.xautoclaim.return_value = ("0-0", [], [])
+
+    await module.reclaim_stale(redis, "group")
+
+    redis.xautoclaim.assert_awaited_once()

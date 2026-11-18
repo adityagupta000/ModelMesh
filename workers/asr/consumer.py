@@ -9,7 +9,9 @@ from inference import transcribe
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-WORKER_NAME = "asr-worker"
+WORKER_NAME = os.getenv("WORKER_NAME", "asr-worker")
+CONSUMER = f"{WORKER_NAME}-{os.getenv('HOSTNAME', '1')}"
+RECLAIM_IDLE_MS = int(os.getenv("RECLAIM_IDLE_MS", "300000"))
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 2
@@ -136,6 +138,27 @@ async def log_consumer_lag(redis, group):
         logger.debug(f"Could not fetch lag metrics: {exc}")
 
 
+async def reclaim_stale(redis, group):
+    next_id = "0-0"
+    for _ in range(100):
+        res = await redis.xautoclaim(
+            "inference_jobs",
+            group,
+            CONSUMER,
+            RECLAIM_IDLE_MS,
+            start_id=next_id,
+            count=10,
+        )
+        next_id = res[0]
+        entries = res[1]
+        if len(res) > 2 and res[2]:
+            await redis.xack("inference_jobs", group, *res[2])
+        for entry_id, fields in entries:
+            await process_entry(redis, group, entry_id, fields)
+        if next_id in (b"0-0", "0-0"):
+            break
+
+
 async def consume_loop():
     redis = Redis.from_url(REDIS_URL, decode_responses=False)
     group = f"{WORKER_NAME}_group"
@@ -146,12 +169,13 @@ async def consume_loop():
         except Exception:
             logger.info(f"Consumer group {group} already exists")
         logger.info(f"Starting consumer loop for {WORKER_NAME}")
+        await reclaim_stale(redis, group)
         lag_counter = 0
         while True:
             try:
                 messages = await redis.xreadgroup(
                     group,
-                    f"{WORKER_NAME}-1",
+                    CONSUMER,
                     {"inference_jobs": ">"},
                     count=1,
                     block=5000,
@@ -159,6 +183,7 @@ async def consume_loop():
                 lag_counter += 1
                 if lag_counter >= 10:
                     await log_consumer_lag(redis, group)
+                    await reclaim_stale(redis, group)
                     lag_counter = 0
                 if not messages:
                     continue
