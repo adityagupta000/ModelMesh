@@ -13,8 +13,9 @@ from auth import (
     create_access_token,
     create_api_key,
     decode_token,
-    make_verify_api_key,
-    make_verify_admin_key,
+    verify_api_key,
+    verify_admin_key,
+    ApiKeyRecord,
 )
 from rate_limit import check_rate_limit
 import registry
@@ -31,17 +32,9 @@ from schemas import (
 
 app = FastAPI(title="ModelMesh Gateway", version="1.0.0")
 
-# ── auth dependencies resolved at startup ────────────────────────────────────
-verify_api_key = None
-verify_admin_key = None
-
-
 @app.on_event("startup")
 async def startup():
-    global verify_api_key, verify_admin_key
     await connect()
-    verify_api_key = make_verify_api_key(database)
-    verify_admin_key = make_verify_admin_key(database)
 
 
 @app.on_event("shutdown")
@@ -50,18 +43,6 @@ async def shutdown():
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
-
-def _key_dep():
-    """Thin wrapper so FastAPI resolves verify_api_key after startup."""
-    async def inner(authorization: str | None = Header(None)):
-        return await verify_api_key(authorization)
-    return Depends(inner)
-
-
-def _admin_dep():
-    async def inner(authorization: str | None = Header(None)):
-        return await verify_admin_key(authorization)
-    return Depends(inner)
 
 
 def _jwt_dep():
@@ -161,7 +142,7 @@ async def infer(
     model_name: str,
     file: UploadFile = File(...),
     version: str | None = None,
-    key=_key_dep(),
+    key: ApiKeyRecord = Depends(verify_api_key),
 ):
     await check_rate_limit(key.id, key.rate_limit_per_min, redis)
 
@@ -192,7 +173,7 @@ async def infer(
 
 
 @app.get("/v1/jobs/{job_id}", tags=["inference"])
-async def get_job_status(job_id: str, key=_key_dep()):
+async def get_job_status(job_id: str, key: ApiKeyRecord = Depends(verify_api_key)):
     result = await _get_job_status(redis, job_id)
     if not result:
         raise HTTPException(404, "Job not found or expired")
@@ -216,7 +197,9 @@ async def get_model_endpoint(name: str, version: str = "v1"):
 
 
 @app.post("/v1/models", tags=["registry"])
-async def register_model_endpoint(payload: ModelRegistration, key=_admin_dep()):
+async def register_model_endpoint(
+    payload: ModelRegistration, key: ApiKeyRecord = Depends(verify_admin_key)
+):
     if payload.protocol not in ("http", "grpc"):
         raise HTTPException(400, "protocol must be 'http' or 'grpc'")
     try:
@@ -229,7 +212,9 @@ async def register_model_endpoint(payload: ModelRegistration, key=_admin_dep()):
 
 
 @app.patch("/v1/models/{model_id}", tags=["registry"])
-async def update_model_endpoint(model_id: str, payload: ModelUpdate, key=_admin_dep()):
+async def update_model_endpoint(
+    model_id: str, payload: ModelUpdate, key: ApiKeyRecord = Depends(verify_admin_key)
+):
     model = await registry.get_model_by_id(database, model_id)
     if not model:
         raise HTTPException(404, "Model not found")
@@ -238,7 +223,9 @@ async def update_model_endpoint(model_id: str, payload: ModelUpdate, key=_admin_
 
 
 @app.delete("/v1/models/{model_id}", tags=["registry"])
-async def disable_model_endpoint(model_id: str, key=_admin_dep()):
+async def disable_model_endpoint(
+    model_id: str, key: ApiKeyRecord = Depends(verify_admin_key)
+):
     model = await registry.get_model_by_id(database, model_id)
     if not model:
         raise HTTPException(404, "Model not found")

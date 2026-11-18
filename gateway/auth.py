@@ -7,8 +7,10 @@ from typing import Optional
 import bcrypt
 import jwt
 from databases import Database
-from fastapi import Depends, HTTPException, Header
+from fastapi import HTTPException, Header
 from dataclasses import dataclass
+
+from db import database
 
 SECRET_KEY = os.getenv("JWT_SECRET", "change-me-in-production")
 ALGORITHM = "HS256"
@@ -88,25 +90,16 @@ def _extract_bearer(authorization: Optional[str]) -> str:
     return authorization.removeprefix("Bearer ").strip()
 
 
-def make_verify_api_key(db: Database):
-    async def verify_api_key(authorization: Optional[str] = Header(None)) -> ApiKeyRecord:
-        raw_key = _extract_bearer(authorization)
-        record = await _lookup_key(db, raw_key)
-        if not record:
-            raise HTTPException(401, "Invalid or revoked API key")
-        return record
-
-    return verify_api_key
+async def verify_api_key(authorization: Optional[str] = Header(None)) -> ApiKeyRecord:
+    raw_key = _extract_bearer(authorization)
+    record = await _lookup_key(database, raw_key)
+    if not record:
+        raise HTTPException(401, "Invalid or revoked API key")
+    return record
 
 
-def make_verify_admin_key(db: Database):
-    async def verify_admin_key(authorization: Optional[str] = Header(None)) -> ApiKeyRecord:
-        raw_key = _extract_bearer(authorization)
-        record = await _lookup_key(db, raw_key)
-        if not record:
-            raise HTTPException(401, "Invalid or revoked API key")
-        if not record.is_admin:
-            raise HTTPException(403, "Admin key required")
-        return record
-
-    return verify_admin_key
+async def verify_admin_key(authorization: Optional[str] = Header(None)) -> ApiKeyRecord:
+    record = await verify_api_key(authorization)
+    if not record.is_admin:
+        raise HTTPException(403, "Admin key required")
+    return record
