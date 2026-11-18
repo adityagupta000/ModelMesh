@@ -168,7 +168,7 @@ graph TB
 
 **Solution**: A worker container starts the HTTP server, gRPC server, and Redis consumer as separate processes. The processes do not share in-memory model instances.
 
-**Trade-off**: Each process can load its own model instance; running services in one container does not mean model weights are loaded only once. Compose measurements showed the ASR container at 819.6 MiB and the doc-ocr container at 1.264 GiB at an idle/no-streaming checkpoint; Kubernetes measurements require a running cluster.
+**Trade-off**: Each process can load its own model instance; running services in one container does not mean model weights are loaded only once. Final Phase 9 Compose measurements showed the ASR container at 1.084 GiB and the doc-ocr container at 1.185 GiB; Kubernetes measurements require a running cluster.
 
 ### 4. Protocol Selection
 
