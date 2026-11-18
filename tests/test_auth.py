@@ -1,25 +1,32 @@
+import secrets
+
 import pytest
 from conftest import auth_header
 
+pytestmark = pytest.mark.asyncio(scope="session")
 
-@pytest.mark.asyncio
+
 async def test_register_user(client):
     resp = await client.post(
         "/v1/auth/register",
-        json={"email": "newuser@example.com", "password": "secret123"},
+        json={
+            "email": f"user-{secrets.token_hex(4)}@example.com",
+            "password": "secret123",
+        },
     )
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
 async def test_register_duplicate_email(client):
-    payload = {"email": "dup@example.com", "password": "x"}
+    payload = {
+        "email": f"user-{secrets.token_hex(4)}@example.com",
+        "password": "x",
+    }
     await client.post("/v1/auth/register", json=payload)
     resp = await client.post("/v1/auth/register", json=payload)
     assert resp.status_code == 400
 
 
-@pytest.mark.asyncio
 async def test_login_success(client, regular_user):
     resp = await client.post(
         "/v1/auth/login",
@@ -29,7 +36,6 @@ async def test_login_success(client, regular_user):
     assert "access_token" in resp.json()
 
 
-@pytest.mark.asyncio
 async def test_login_wrong_password(client, regular_user):
     resp = await client.post(
         "/v1/auth/login",
@@ -38,13 +44,11 @@ async def test_login_wrong_password(client, regular_user):
     assert resp.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_rejects_missing_key(client):
     resp = await client.post("/v1/infer/doc-ocr")
     assert resp.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_rejects_invalid_key(client):
     resp = await client.post(
         "/v1/infer/doc-ocr",
@@ -53,7 +57,6 @@ async def test_rejects_invalid_key(client):
     assert resp.status_code == 401
 
 
-@pytest.mark.asyncio
 async def test_rate_limit_enforced(client, db, regular_user):
     """A key with limit=2 should 429 on the third request."""
     import auth as _auth

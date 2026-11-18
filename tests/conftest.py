@@ -6,15 +6,16 @@ Set TEST_DATABASE_URL and TEST_REDIS_URL env vars, or rely on the defaults below
 """
 
 import asyncio
-import hashlib
 import os
 import secrets
+import subprocess
+import sys
+import tempfile
 
 import pytest
 import pytest_asyncio
-from databases import Database
 from httpx import AsyncClient, ASGITransport
-import redis.asyncio as aioredis
+import redis
 
 # ── point at the test DB ──────────────────────────────────────────────────────
 TEST_DATABASE_URL = os.getenv(
@@ -22,19 +23,34 @@ TEST_DATABASE_URL = os.getenv(
 )
 TEST_REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/1")
 
-# Patch module-level singletons before importing the app
+# Set configuration before importing the application singletons.
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ["REDIS_URL"] = TEST_REDIS_URL
 os.environ["JWT_SECRET"] = "test-secret"
 
-# ── import app after env is patched ──────────────────────────────────────────
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "gateway"))
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_PROTO_OUTPUT = tempfile.TemporaryDirectory(prefix="modelmesh-test-proto-")
+subprocess.run(
+    [
+        sys.executable,
+        "-m",
+        "grpc_tools.protoc",
+        f"-I{ROOT}",
+        f"--python_out={_PROTO_OUTPUT.name}",
+        f"--grpc_python_out={_PROTO_OUTPUT.name}",
+        os.path.join(ROOT, "inference.proto"),
+    ],
+    cwd=ROOT,
+    check=True,
+)
 
-from main import app  # noqa: E402  (must come after env patch)
-import db as _db      # noqa: E402
+sys.path.insert(0, _PROTO_OUTPUT.name)
+sys.path.insert(0, os.path.join(ROOT, "gateway"))
+
+from main import app  # noqa: E402
+from db import database, redis as app_redis  # noqa: E402
 import auth as _auth  # noqa: E402
-import registry       # noqa: E402
+import registry  # noqa: E402
 
 
 # ── event loop ───────────────────────────────────────────────────────────────
@@ -48,19 +64,30 @@ def event_loop():
 # ── DB + redis fixtures ───────────────────────────────────────────────────────
 @pytest_asyncio.fixture(scope="session")
 async def db():
-    database = Database(TEST_DATABASE_URL)
     await database.connect()
-    _db.database = database
     yield database
     await database.disconnect()
 
 
 @pytest_asyncio.fixture(scope="session")
 async def redis_client():
-    r = aioredis.from_url(TEST_REDIS_URL, decode_responses=True)
-    _db.redis = r
-    yield r
-    await r.aclose()
+    assert TEST_REDIS_URL.rstrip("/").endswith("/1"), (
+        "refusing to use a Redis database other than test DB 1"
+    )
+    yield app_redis
+
+
+@pytest.fixture(autouse=True)
+def _clean_redis():
+    assert TEST_REDIS_URL.rstrip("/").endswith("/1"), (
+        "refusing to flush a Redis database other than test DB 1"
+    )
+    client = redis.Redis.from_url(TEST_REDIS_URL, decode_responses=True)
+    try:
+        client.flushdb()
+    finally:
+        client.close()
+    yield
 
 
 # ── HTTP client ───────────────────────────────────────────────────────────────
