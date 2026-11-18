@@ -40,11 +40,3 @@ class ModelUpdate(BaseModel):
     supports_streaming: Optional[bool] = None
     canary_percent: Optional[int] = None
     description: Optional[str] = None
-
-
-class InferResponse(BaseModel):
-    result: dict
-    model: str
-    version: str
-    latency_ms: int
-    cached: bool = False
