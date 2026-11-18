@@ -26,7 +26,6 @@ async def test_list_models_returns_seeded(db):
     assert "asr" in names
 
 
-@pytest.mark.xfail(reason="fixed in Phase 8")
 async def test_disabled_model_returns_503(client, db, regular_key, doc_ocr_model_id):
     model = await registry.get_model(db, "doc-ocr")
     assert model is not None
@@ -49,6 +48,41 @@ async def test_unknown_model_returns_404(client, regular_key):
         files={"file": ("x.jpg", b"\xff\xd8\xff", "image/jpeg")},
     )
     assert resp.status_code == 404
+
+
+async def test_register_rejects_invalid_version(client, admin_key):
+    resp = await client.post(
+        "/v1/models",
+        json={
+            "name": f"invalid-version-{secrets.token_hex(4)}",
+            "version": "2024-10",
+            "worker_name": "test-worker",
+            "protocol": "http",
+            "endpoint": "http://test-worker:8003/infer",
+        },
+        headers=auth_header(admin_key),
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("payload",),
+    [
+        ({"protocol": "gprc"},),
+        ({"status": "deleted"},),
+        ({"canary_percent": 150},),
+        ({"canary_percent": -1},),
+    ],
+)
+async def test_patch_rejects_invalid_registry_values(
+    client, admin_key, doc_ocr_model_id, payload
+):
+    resp = await client.patch(
+        f"/v1/models/{doc_ocr_model_id}",
+        json=payload,
+        headers=auth_header(admin_key),
+    )
+    assert resp.status_code == 422
 
 
 async def test_duplicate_registration_rejected(db, admin_key, client):

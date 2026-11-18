@@ -4,6 +4,7 @@ These run without Docker or a downloaded EasyOCR model.
 """
 
 import io
+import types
 from unittest.mock import MagicMock
 
 import pytest
@@ -52,3 +53,64 @@ def test_extract_text_invalid_bytes_raises(doc_ocr_module):
         module.extract_text(b"not-an-image")
 
     easyocr_stub.Reader.return_value.readtext.assert_not_called()
+
+
+@pytest.mark.asyncio(scope="session")
+async def test_doc_ocr_http_accepts_octet_stream(monkeypatch):
+    easyocr_stub = MagicMock()
+    inference_stub = types.SimpleNamespace(
+        extract_text=lambda payload: {
+            "text": "ok",
+            "avg_confidence": 1.0,
+            "line_count": 1,
+        }
+    )
+    module = load_module_from_path(
+        "doc_ocr_main",
+        "workers/doc_ocr/main.py",
+        stubs={"easyocr": easyocr_stub, "inference": inference_stub},
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setattr(
+        module,
+        "extract_text",
+        lambda payload: {
+            "text": "ok",
+            "avg_confidence": 1.0,
+            "line_count": 1,
+        },
+    )
+
+    class StubUpload:
+        content_type = "application/octet-stream"
+
+        async def read(self):
+            return b"not-actually-decoded-by-this-test"
+
+    result = await module.infer(StubUpload())
+    assert result["text"] == "ok"
+
+
+@pytest.mark.asyncio(scope="session")
+async def test_doc_ocr_http_invalid_image_returns_400(monkeypatch):
+    inference_stub = types.SimpleNamespace(
+        extract_text=lambda payload: (_ for _ in ()).throw(
+            ValueError("Invalid image data")
+        )
+    )
+    module = load_module_from_path(
+        "doc_ocr_main_invalid",
+        "workers/doc_ocr/main.py",
+        stubs={"easyocr": MagicMock(), "inference": inference_stub},
+        monkeypatch=monkeypatch,
+    )
+
+    class StubUpload:
+        content_type = "image/jpeg"
+
+        async def read(self):
+            return b"not-an-image"
+
+    with pytest.raises(module.HTTPException) as exc:
+        await module.infer(StubUpload())
+    assert exc.value.status_code == 400
