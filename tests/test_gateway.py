@@ -108,6 +108,19 @@ async def test_canary_percent_zero_routes_stable(monkeypatch, db):
     assert result.version == "v9"
 
 
+async def test_canary_roll_at_boundary_is_canary(monkeypatch, db):
+    versions = [_model("v9", 50), _model("v10", 50)]
+    monkeypatch.setattr(
+        main.registry,
+        "list_versions",
+        lambda *args, **kwargs: _async_result(versions),
+    )
+    monkeypatch.setattr(main.random, "randint", lambda start, end: 50)
+
+    result = await main.get_model_with_canary(db, "custom")
+    assert result.version == "v10"
+
+
 async def test_one_active_canary_version_always_routes_it(monkeypatch, db):
     versions = [_model("v7", 0)]
     monkeypatch.setattr(
@@ -161,6 +174,11 @@ async def test_ready_returns_503_when_redis_is_down(monkeypatch, client):
     resp = await client.get("/ready")
     assert resp.status_code == 503
     assert "redis" in resp.json()["detail"].lower()
+
+
+async def test_ready_returns_200_when_services_are_up(client):
+    resp = await client.get("/ready")
+    assert resp.status_code == 200
 
 
 async def _async_result(value):

@@ -89,3 +89,28 @@ async def test_doc_ocr_http_accepts_octet_stream(monkeypatch):
 
     result = await module.infer(StubUpload())
     assert result["text"] == "ok"
+
+
+@pytest.mark.asyncio(scope="session")
+async def test_doc_ocr_http_invalid_image_returns_400(monkeypatch):
+    inference_stub = types.SimpleNamespace(
+        extract_text=lambda payload: (_ for _ in ()).throw(
+            ValueError("Invalid image data")
+        )
+    )
+    module = load_module_from_path(
+        "doc_ocr_main_invalid",
+        "workers/doc_ocr/main.py",
+        stubs={"easyocr": MagicMock(), "inference": inference_stub},
+        monkeypatch=monkeypatch,
+    )
+
+    class StubUpload:
+        content_type = "image/jpeg"
+
+        async def read(self):
+            return b"not-an-image"
+
+    with pytest.raises(module.HTTPException) as exc:
+        await module.infer(StubUpload())
+    assert exc.value.status_code == 400

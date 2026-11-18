@@ -94,6 +94,9 @@ async def test_shared_lookup_rejects_revoked_key(db, regular_user):
     import auth as _auth
 
     raw_key = await _auth.create_api_key(db, regular_user["id"], rate_limit_per_min=60)
+    valid = await _auth.lookup_key(db, raw_key)
+    assert valid is not None
+
     await db.execute(
         "UPDATE api_keys SET revoked = TRUE WHERE key_hash = :key_hash",
         {"key_hash": _auth._hash_key(raw_key)},
