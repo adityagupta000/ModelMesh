@@ -1,52 +1,53 @@
 """
 Unit tests for the ASR worker inference function.
-These run without Docker — they mock the whisper model.
+These run without Docker or a downloaded Whisper model.
 """
 
+import io
+import wave
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
+
+from helpers import load_module_from_path
 
 
 def _make_silence_wav() -> bytes:
-    """Generate a minimal valid WAV file (44-byte header, 1 second silence)."""
-    import struct, wave, io
+    """Generate a minimal valid WAV file (one second of silence)."""
     buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(16000)
-        w.writeframes(b"\x00\x00" * 16000)
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x00\x00" * 16000)
     return buf.getvalue()
 
 
-@patch("workers.asr.inference.whisper")
-def test_transcribe_returns_text(mock_whisper):
-    import sys, os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "workers", "asr"))
+@pytest.fixture
+def asr_module(monkeypatch):
+    whisper_stub = MagicMock()
+    module = load_module_from_path(
+        "asr_inference",
+        "workers/asr/inference.py",
+        stubs={"whisper": whisper_stub},
+        monkeypatch=monkeypatch,
+    )
+    return module, whisper_stub
 
+
+def test_transcribe_returns_text(asr_module):
+    module, whisper_stub = asr_module
     mock_model = MagicMock()
     mock_model.transcribe.return_value = {"text": " hello world"}
-    mock_whisper.load_model.return_value = mock_model
+    whisper_stub.load_model.return_value = mock_model
 
-    # Reset module-level singleton so mock takes effect
-    import inference as asr_inf
-    asr_inf._model = None
-
-    result = asr_inf.transcribe(_make_silence_wav())
-    assert result == {"text": " hello world"}
+    assert module.transcribe(_make_silence_wav()) == {"text": " hello world"}
 
 
-@patch("workers.asr.inference.whisper")
-def test_transcribe_empty_audio(mock_whisper):
-    import sys, os
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "workers", "asr"))
-
+def test_transcribe_empty_audio(asr_module):
+    module, whisper_stub = asr_module
     mock_model = MagicMock()
     mock_model.transcribe.return_value = {"text": ""}
-    mock_whisper.load_model.return_value = mock_model
+    whisper_stub.load_model.return_value = mock_model
 
-    import inference as asr_inf
-    asr_inf._model = None
-
-    result = asr_inf.transcribe(_make_silence_wav())
-    assert "text" in result
+    assert module.transcribe(_make_silence_wav()) == {"text": ""}
