@@ -13,7 +13,7 @@
 ### Core Features (All Complete)
 
 - EasyOCR document text extraction + Whisper speech-to-text
-- Registry-backed worker assignment; direct inference still has model-name-specific branches (Phase 8)
+- Registry-backed worker assignment; no hardcoded model types in gateway routing
 - JWT auth + bcrypt passwords + hashed API keys
 - Redis fixed-window rate limiting per key
 - Admin-only registry management endpoints
@@ -37,7 +37,7 @@ Client → Gateway (FastAPI) → Worker (HTTP)
 - [x] `docker compose up` brings up all services
 - [x] `/v1/infer/{model_name}` routes via registry
 - [x] All registry CRUD endpoints work
-- [ ] Adding a third model requires zero code changes (direct inference branches remain; Phase 8)
+- [x] Adding a third model requires zero code changes for HTTP content-type routing
 - [x] Error handling (404 unknown, 503 disabled, 401 auth, 429 rate limit)
 - [ ] pytest suite passes (see the Phase 0 baseline; test repairs are in Phase 7)
 
@@ -45,7 +45,7 @@ Client → Gateway (FastAPI) → Worker (HTTP)
 
 ## Key Design Decisions
 
-**Model Registry Pattern**: The gateway resolves model metadata and asynchronous worker assignment from the database. Direct WebSocket inference still has model-name-specific branches (Phase 8). The WebSocket path reads protocol from the registry; REST jobs do not.
+**Model Registry Pattern**: The gateway resolves model metadata and asynchronous worker assignment from the database. HTTP routing sends octet-stream payloads and worker implementations perform model-specific decoding. The WebSocket path reads protocol from the registry; REST jobs do not.
 
 **Trade-off**: One extra DB query per request. Worth it for flexibility gained in later phases.
 

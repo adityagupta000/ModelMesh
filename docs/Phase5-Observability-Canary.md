@@ -26,6 +26,9 @@
 - `get_model_with_canary()` function in gateway
 - Registry-driven traffic splitting (no K8s selector tricks)
 - Version pinning support (`?version=v1` bypasses canary)
+- Numeric version comparison: with two or more active versions, the highest is the canary and the lowest is stable; versions in between receive no traffic
+- WebSocket inference has no canary routing
+- The API-key rate limiter uses a fixed 60-second window
 - Tested with v1/v2 split, verified via ClickHouse queries
 
 ### Prometheus Metrics Instrumentation - NOT IMPLEMENTED
