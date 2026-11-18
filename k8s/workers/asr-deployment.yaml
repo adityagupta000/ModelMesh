@@ -20,9 +20,30 @@ spec:
               value: "tiny"
             - name: REDIS_URL
               value: "redis://redis:6379"
+            - name: WORKER_NAME
+              value: "asr-worker"
+            - name: MAX_UPLOAD_BYTES
+              value: "10485760"
+            - name: RECLAIM_IDLE_MS
+              value: "300000"
+            - name: GRPC_MAX_WORKERS
+              value: "3"
+            - name: STREAM_MAXLEN
+              value: "10000"
+            - name: PAYLOAD_TTL_SECONDS
+              value: "3600"
           ports:
             - containerPort: 8002
             - containerPort: 50051
+          readinessProbe:
+            httpGet: { path: /health, port: 8002 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 8002 }
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 3
           resources:
             requests: { cpu: "500m", memory: "1200Mi" }
             limits: { cpu: "1", memory: "1800Mi" }
