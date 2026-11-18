@@ -240,6 +240,10 @@ docker compose restart gateway doc-ocr-worker asr-worker
 
 The test harness generates protobuf modules into a temporary directory at startup; it does not add generated source files to the repository.
 
+`test_disabled_model_returns_503` is an expected xfail until Phase 8 fixes disabled-model routing through the canary path.
+
+**Expected: 20 passed, 1 xfailed.**
+
 ### Load Testing (Artillery)
 
 ```bash

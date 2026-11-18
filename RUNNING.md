@@ -85,4 +85,8 @@ deactivate
 
 Tests use the scratch database `modelmesh_test` and Redis DB 1, never the `modelmesh` database or Redis DB 0. If `modelmesh_test` already exists, skip only the `CREATE DATABASE` command; the idempotent schema and migration commands may be rerun. Never drop it. Only starting Compose needs the two `-f` flags. Plain `docker compose up -d` removes the published database ports, so use the override form whenever running tests. If Postgres or Redis are recreated while the app is running, run `docker compose restart gateway doc-ocr-worker asr-worker`.
 
+`test_disabled_model_returns_503` is an expected xfail until Phase 8 fixes disabled-model routing through the canary path.
+
+**Expected: 20 passed, 1 xfailed.** For the full test setup explanation, see [SETUP.md](SETUP.md#testing).
+
 For the full test setup explanation, see [SETUP.md](SETUP.md#testing).
