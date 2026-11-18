@@ -34,6 +34,7 @@ async def test_disabled_model_returns_503(client, db, regular_key, doc_ocr_model
         resp = await client.post(
             "/v1/infer/doc-ocr",
             headers=auth_header(regular_key),
+            files={"file": ("x.jpg", b"\xff\xd8\xff", "image/jpeg")},
         )
         assert resp.status_code == 503
     finally:
@@ -44,6 +45,7 @@ async def test_unknown_model_returns_404(client, regular_key):
     resp = await client.post(
         "/v1/infer/no-such-model",
         headers=auth_header(regular_key),
+        files={"file": ("x.jpg", b"\xff\xd8\xff", "image/jpeg")},
     )
     assert resp.status_code == 404
 

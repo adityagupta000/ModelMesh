@@ -45,7 +45,10 @@ async def test_login_wrong_password(client, regular_user):
 
 
 async def test_rejects_missing_key(client):
-    resp = await client.post("/v1/infer/doc-ocr")
+    resp = await client.post(
+        "/v1/infer/doc-ocr",
+        files={"file": ("x.jpg", b"\xff\xd8\xff", "image/jpeg")},
+    )
     assert resp.status_code == 401
 
 
@@ -53,6 +56,7 @@ async def test_rejects_invalid_key(client):
     resp = await client.post(
         "/v1/infer/doc-ocr",
         headers={"Authorization": "Bearer totally-fake-key"},
+        files={"file": ("x.jpg", b"\xff\xd8\xff", "image/jpeg")},
     )
     assert resp.status_code == 401
 
@@ -66,8 +70,16 @@ async def test_rate_limit_enforced(client, db, regular_user):
 
     # Exhaust the limit (requests may 404/503 on the worker, that's fine)
     for _ in range(2):
-        await client.post("/v1/infer/doc-ocr", headers=headers)
+        await client.post(
+            "/v1/infer/doc-ocr",
+            headers=headers,
+            files={"file": ("x.jpg", b"\xff\xd8\xff", "image/jpeg")},
+        )
 
     # Third call should be rate-limited
-    resp = await client.post("/v1/infer/doc-ocr", headers=headers)
+    resp = await client.post(
+        "/v1/infer/doc-ocr",
+        headers=headers,
+        files={"file": ("x.jpg", b"\xff\xd8\xff", "image/jpeg")},
+    )
     assert resp.status_code == 429
