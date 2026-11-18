@@ -17,7 +17,10 @@ def consumer_module(request, monkeypatch):
         rel_path = "workers/doc_ocr/consumer.py"
         unique_name = "doc_consumer"
     else:
-        inference = SimpleNamespace(transcribe=MagicMock())
+        inference = SimpleNamespace(
+            transcribe=MagicMock(),
+            _load_model=MagicMock(),
+        )
         stubs = {"inference": inference}
         rel_path = "workers/asr/consumer.py"
         unique_name = "asr_consumer"
