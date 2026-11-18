@@ -46,6 +46,9 @@ Client polls /v1/jobs/{job_id} for result
 - [x] Stale model behavior documented
 - [x] Kafka alternative code exists but is dormant and not wired/deployed
 - [x] Redis Streams is the queue used by the application; Kafka code is dormant
+- [x] Payloads are stored in separate Redis keys with a configurable TTL
+- [x] Stale pending entries are reclaimed using the worker hostname as part of the consumer name
+- [x] Poison messages are a known limit: reclaimed forever until a future delivery-count DLQ policy is added
 
 ---
 
@@ -63,6 +66,10 @@ Client polls /v1/jobs/{job_id} for result
 **Stale model behavior**: Jobs enqueued before model disabled will still process. Disabling stops NEW jobs, not in-flight ones.
 
 **Queue selection**: Redis Streams is wired into the application. Kafka-related code is present but is not wired or deployed.
+
+**Crash recovery**: stale pending entries are reclaimed after `RECLAIM_IDLE_MS` (default 300000 ms). A poison message that causes a worker to crash on every delivery is reclaimed forever; delivery-count limits are intentionally not part of this baseline.
+
+**Deploy order**: deploy workers first because they accept both legacy payload fields and payload keys; wait for the queue to drain; then deploy the gateway. Rolling the gateway back is safe.
 
 ---
 
