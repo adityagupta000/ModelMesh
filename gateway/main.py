@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import random
 import re
@@ -33,6 +34,7 @@ from schemas import (
 )
 
 app = FastAPI(title="ModelMesh Gateway", version="1.0.0")
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))
 
 @app.on_event("startup")
 async def startup():
@@ -158,7 +160,9 @@ async def infer(
     if model.status != "active":
         raise HTTPException(503, "Model is currently disabled")
 
-    payload_bytes = await file.read()
+    payload_bytes = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(payload_bytes) > MAX_UPLOAD_BYTES:
+        raise HTTPException(413, "Upload exceeds maximum allowed size")
 
     job_id = await enqueue_job(redis, model, payload_bytes, key.id)
 
@@ -311,6 +315,9 @@ async def ws_infer(websocket: WebSocket, model_name: str):
                 try:
                     while True:
                         data = await websocket.receive_bytes()
+                        if len(data) > MAX_UPLOAD_BYTES:
+                            await websocket.close(code=1009)
+                            return
                         chunk_count += 1
                         is_final = True  # simplified: one chunk for now
                         yield data, chunk_count, is_final
