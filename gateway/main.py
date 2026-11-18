@@ -77,20 +77,6 @@ def _jwt_dep():
     return Depends(inner)
 
 
-async def _log_request(key_id: str, model_id: str, model_name: str, status: str, latency_ms: int):
-    await database.execute(
-        """INSERT INTO requests (api_key_id, model_id, model_type, status, latency_ms)
-           VALUES (:key_id, :model_id, :model_name, :status, :latency_ms)""",
-        {
-            "key_id": key_id,
-            "model_id": model_id,
-            "model_name": model_name,
-            "status": status,
-            "latency_ms": latency_ms,
-        },
-    )
-
-
 async def route_request(endpoint: str, protocol: str, payload: bytes, filename: str = "file", model_name: str = ""):
     if protocol == "http":
         # Determine content-type/filename so workers that validate MIME type

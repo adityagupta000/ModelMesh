@@ -2,7 +2,7 @@
 
 ## Implementation Status: COMPLETE ✓
 
-**Goal:** Move entire stack from Docker Compose to Kubernetes orchestration. Production-ready manifests for local (minikube) deployment.
+**Goal:** Move the stack from Docker Compose to Kubernetes orchestration using development manifests for local (minikube) deployment.
 
 **Actual time:** Completed
 
@@ -17,10 +17,10 @@
 - Deployments for Redis, Gateway, Workers
 - Services for internal communication
 - ConfigMap for Postgres init SQL
-- Secrets for JWT + DB passwords
+- Secrets for JWT and database connection
 - Multi-service containers in workers (HTTP + gRPC + Redis consumer)
 - Resource requests and limits
-- Readiness and liveness probes
+- Gateway readiness and liveness probes
 - Protobuf compilation in entrypoint scripts
 
 ### Manifest Structure
@@ -28,7 +28,7 @@
 ```
 k8s/
 ├── namespace.yaml              # modelmesh namespace
-├── secrets.yaml                # JWT secret, DB passwords
+├── secrets.yaml                # Database Secret
 ├── redis/
 │   ├── deployment.yaml
 │   └── service.yaml
@@ -39,7 +39,7 @@ k8s/
 ├── gateway/
 │   ├── deployment.yaml
 │   ├── service.yaml
-│   └── jwt-secret.yaml
+│   └── jwt-secret.yaml         # Gateway JWT Secret
 ├── workers/
 │   ├── doc-ocr-deployment.yaml
 │   ├── doc-ocr-service.yaml
@@ -60,9 +60,9 @@ k8s/
 - [x] Postgres init ConfigMap with schema
 - [x] Gateway Deployment + Service
 - [x] Worker Deployments + Services (doc-ocr, asr)
-- [x] Secrets for JWT and DB passwords
+- [x] Database and gateway JWT Secrets
 - [x] Resource requests and limits on all pods
-- [x] Readiness and liveness probes
+- [x] Gateway readiness and liveness probes
 - [x] Multi-service containers in workers
 - [x] Protobuf compilation in entrypoint
 - [x] Verified on minikube with port-forward access
@@ -103,9 +103,11 @@ kubectl get pods -n modelmesh
 kubectl get svc -n modelmesh
 
 # 5. Access gateway
-kubectl port-forward -n modelmesh svc/gateway 8000:80
+kubectl port-forward -n modelmesh svc/gateway 8000:8000
 curl http://localhost:8000/v1/models
 ```
+
+`k8s/secrets.yaml` defines the database Secret; `k8s/gateway/jwt-secret.yaml` defines the gateway JWT Secret and is applied by the gateway directory command above. The gateway Service exposes port 8000.
 
 ---
 
@@ -156,15 +158,11 @@ kubectl top nodes
 
 ## Health Checks
 
-**Readiness probes**: Is service ready to accept traffic?
+**Configured gateway readiness probe**: `GET /ready`.
 
-- Gateway: HTTP GET /v1/models
-- Workers: HTTP GET /health
+**Configured gateway liveness probe**: `GET /health`.
 
-**Liveness probes**: Is service alive?
-
-- Gateway: HTTP GET /v1/models
-- Workers: HTTP GET /health
+Workers expose `/health` endpoints, but their Kubernetes Deployments do not define readiness or liveness probes yet.
 
 Failed probes trigger Kubernetes pod restarts.
 

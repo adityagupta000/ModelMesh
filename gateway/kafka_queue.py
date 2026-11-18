@@ -1,3 +1,4 @@
+# DORMANT: not imported by the gateway and not deployed. See README.
 import json
 import uuid
 from typing import Optional

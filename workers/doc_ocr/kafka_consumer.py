@@ -1,3 +1,4 @@
+# DORMANT: not imported by the gateway and not deployed. See README.
 import asyncio
 import json
 import logging

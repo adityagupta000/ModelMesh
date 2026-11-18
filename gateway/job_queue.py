@@ -69,35 +69,3 @@ async def get_job_status(redis: Redis, job_id: str) -> Optional[dict]:
         return json.loads(status)
 
     return None
-
-
-async def update_job_status(redis: Redis, job_id: str, status: str, result: Optional[dict] = None, error: Optional[str] = None):
-    """
-    Update job status in Redis.
-
-    Args:
-        redis: Async Redis client
-        job_id: Job identifier
-        status: New status (processing, success, failed)
-        result: Optional result data for successful jobs
-        error: Optional error message for failed jobs
-    """
-    data = {
-        "job_id": job_id,
-        "status": status
-    }
-
-    if result:
-        data["result"] = result
-
-    if error:
-        data["error"] = error
-
-    if status in ("success", "failed"):
-        # Store final result with longer TTL
-        await redis.setex(f"result:{job_id}", 7200, json.dumps(data))
-        # Clean up status key
-        await redis.delete(f"job:{job_id}:status")
-    else:
-        # Update intermediate status
-        await redis.setex(f"job:{job_id}:status", 3600, json.dumps(data))

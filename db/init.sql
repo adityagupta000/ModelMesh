@@ -27,8 +27,12 @@ CREATE TABLE IF NOT EXISTS models (
   endpoint TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',
   supports_streaming BOOLEAN NOT NULL DEFAULT FALSE,
+  canary_percent INT NOT NULL DEFAULT 0,
   description TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT models_protocol_chk CHECK (protocol IN ('http','grpc')),
+  CONSTRAINT models_status_chk CHECK (status IN ('active','disabled','deleted')),
+  CONSTRAINT models_canary_chk CHECK (canary_percent BETWEEN 0 AND 100),
   UNIQUE(name, version)
 );
 

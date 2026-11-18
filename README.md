@@ -2,9 +2,9 @@
 
 A horizontally scalable ML serving platform demonstrating registry-driven architecture, async job queues, real-time streaming, and Kubernetes orchestration.
 
-**Status**: Phases 1-4 Complete ║ Phase 5 Partial (70%)
+**Status**: Development implementation; known gaps and current behavior are documented below.
 
-**[Setup Guide](SETUP.md)** | **[Documentation](docs/)**
+📖 **[Setup Guide](SETUP.md)** | ▶️ **[Run and stop ModelMesh](RUNNING.md)** | 📁 **[Documentation](docs/)**
 
 ---
 
@@ -14,9 +14,9 @@ ModelMesh is an inference gateway built to solve a core problem in ML serving: *
 
 Most inference servers hardcode model names and endpoints. Adding a new model = code change + deployment. Switching protocols (HTTP → gRPC) = refactor. Canary rollouts = complex Kubernetes replica manipulation.
 
-ModelMesh flips this: **all routing is data-driven**. Models live in a PostgreSQL registry. Adding a model is a `POST /v1/models` API call. Protocol switching is an `UPDATE` query. Canary rollouts are percentage fields in the database.
+ModelMesh stores model metadata in a PostgreSQL registry and uses it to assign asynchronous jobs to workers. The WebSocket path reads protocol and endpoint from the registry, but still contains model-name-specific branches; REST jobs do not use the registry protocol, and WebSocket inference does not use canary routing. Removing those remaining model-specific branches is planned for Phase 8.
 
-This project implements a complete, working system demonstrating this pattern across 5 progressive phases.
+This project provides a working inference baseline across five phases. Phase 5 observability is partial; Prometheus and Grafana are not implemented.
 
 ---
 
@@ -35,11 +35,11 @@ elif model_name == "asr":
 
 Every new model requires code changes. Switching protocols requires refactoring. Versioning requires complex routing logic.
 
-ModelMesh approach:
+ModelMesh approach (asynchronous REST job assignment):
 
 ```python
 model = await registry.get_model(db, model_name)  # DB lookup
-return await route(model.endpoint, model.protocol, data)  # Generic routing
+job = {"model_name": model.name, "worker_name": model.worker_name}
 ```
 
 Adding a model:
@@ -48,13 +48,15 @@ Adding a model:
 POST /v1/models {"name": "new-model", "protocol": "grpc", "endpoint": "..."}
 ```
 
-Switching protocols:
+This registers model metadata; a new inference type may still require code changes. Direct WebSocket inference currently has model-specific branches (Phase 8).
+
+Switching protocols for WebSocket inference (the REST job path ignores `protocol`):
 
 ```sql
 UPDATE models SET protocol = 'grpc', endpoint = 'worker:50051' WHERE name = 'doc-ocr';
 ```
 
-Zero code changes. Zero deployments. Just data.
+For WebSocket inference, this changes HTTP/gRPC without a code change or deployment.
 
 ---
 
@@ -83,7 +85,7 @@ graph TB
 
     subgraph "Queue Layer"
         RedisStreams[Redis Streams<br/>Consumer Groups]
-        RedisCache[Redis Cache<br/>Results + Rate Limits]
+        RedisStore[Redis<br/>Job Results + Rate Limits]
     end
 
     subgraph "Worker Services — K8s Deployment"
@@ -93,7 +95,7 @@ graph TB
         ASR[asr-worker<br/>HTTP:8002 gRPC:50052]
     end
 
-    subgraph "Analytics"
+    subgraph "Analytics — Kubernetes only"
         ClickHouse[(ClickHouse<br/>Request Analytics)]
     end
 
@@ -115,10 +117,10 @@ graph TB
     Consumer1 --> DocOCR
     Consumer2 --> ASR
 
-    %% Results + cache
-    DocOCR -->|"Store result"| RedisCache
-    ASR -->|"Store result"| RedisCache
-    RedisCache -.->|"Fetch result"| Gateway
+    %% Job results
+    DocOCR -->|"Store result"| RedisStore
+    ASR -->|"Store result"| RedisStore
+    RedisStore -.->|"Fetch result"| Gateway
 
     %% Streaming path
     WSHandler -->|"Registry lookup"| Registry
@@ -126,9 +128,7 @@ graph TB
     WSHandler <-->|"gRPC stream, bidirectional"| ASR
 
     %% Metrics
-    Gateway -.->|Metrics| ClickHouse
     DocOCR -.->|Metrics| ClickHouse
-    ASR -.->|Metrics| ClickHouse
 
     classDef default fill:#ffffff,stroke:#000000,stroke-width:1.5px,color:#000000
 ```
@@ -141,12 +141,12 @@ graph TB
 
 **Problem**: Hardcoded model names force redeployments for every model addition.
 
-**Solution**: `models` table with name, version, worker_name, protocol, endpoint. Gateway resolves all routing via DB lookups.
+**Solution**: The `models` table stores name, version, worker_name, protocol, and endpoint. The asynchronous REST path resolves the worker from registry metadata; direct WebSocket inference still has model-name-specific branches (Phase 8).
 
 **Payoff**:
 
-- Phase 3: HTTP → gRPC switch = `PATCH /v1/models/{id}`, not a code deploy
-- Phase 5: Canary rollout = INSERT new version row + set `canary_percent` field
+- Phase 3: WebSocket protocol selection (HTTP or gRPC) reads registry data; REST jobs do not read the protocol field
+- Phase 5: REST canary rollout uses a new version row and `canary_percent`; WebSocket inference does not use canary routing
 
 ### 2. Async Queue Architecture
 
@@ -158,8 +158,7 @@ graph TB
 
 - Gateway never blocks
 - Workers scale independently (3 replicas = 3x throughput)
-- Automatic retries + DLQ for failed jobs
-- Idempotent processing (worker crash = safe redelivery)
+- Retries + DLQ for failed jobs
 
 **Trade-off**: Clients poll `/v1/jobs/{id}` instead of instant response (Phase 3 adds WebSockets to fix this)
 
@@ -167,21 +166,13 @@ graph TB
 
 **Problem**: Splitting HTTP + gRPC + Redis consumer into separate pods = 3x memory (model weights loaded 3 times).
 
-**Solution**: Single container runs all 3 services concurrently. Entrypoint script backgrounds HTTP and gRPC servers, runs consumer in foreground.
+**Solution**: A worker container starts the HTTP server, gRPC server, and Redis consumer as separate processes. The processes do not share in-memory model instances.
 
-**Payoff**: 1.5GB model weights loaded once, not 3 times. Container death = consumer crash (intentional).
+**Trade-off**: Each process can load its own model instance; running services in one container does not mean model weights are loaded only once.
 
-### 4. Protocol Abstraction
+### 4. Protocol Selection
 
-```python
-async def route_request(endpoint: str, protocol: str, payload: bytes):
-    if protocol == "http":
-        return await http_client.post(endpoint, data=payload)
-    elif protocol == "grpc":
-        return await grpc_client.call(endpoint, payload)
-```
-
-Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All existing HTTP paths kept working.
+The WebSocket path reads `protocol` and `endpoint` from the registry, then calls `route_request`. That function still contains model-name-specific branches; generic model dispatch is planned for Phase 8. The REST job path queues work and does not read the `protocol` field.
 
 ---
 
@@ -191,14 +182,13 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 
 - Dynamic model registry (PostgreSQL)
 - JWT auth + API key management
-- Redis rate limiting (sliding window)
-- Request logging with latency tracking
+- Redis rate limiting (fixed window)
 - Two workers: EasyOCR (doc-ocr) + Whisper (asr)
 
 ### Phase 2: Async Job Queue ([docs](docs/Phase2-Async-Job-Queue.md))
 
 - Redis Streams job queue with consumer groups
-- Kafka alternative implementation (KRaft mode)
+- Dormant Kafka alternative code (not wired into the application or Compose)
 - Exponential backoff retry logic (2s, 4s, 8s)
 - Dead-letter queue for failed jobs
 - Consumer lag monitoring (XLEN, XPENDING)
@@ -209,7 +199,7 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 - WebSocket endpoint for real-time streaming
 - gRPC with Protocol Buffers for internal communication
 - Bidirectional streaming RPC (PredictStream)
-- Protocol abstraction in registry (HTTP ↔ gRPC switchable)
+- WebSocket protocol selection from registry data (HTTP ↔ gRPC); REST jobs do not read `protocol`
 - Multi-service containers (HTTP + gRPC + Redis consumer)
 
 ### Phase 4: Kubernetes ([docs](docs/Phase4-Kubernetes-Deployment.md))
@@ -224,19 +214,18 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 
 ### Phase 5: Observability + Canary ([docs](docs/Phase5-Observability-Canary.md))
 
-**Implemented (70%)**:
+**Implemented**:
 
-- ClickHouse request analytics (columnar storage, MergeTree engine)
-- Fire-and-forget metric logging (never blocks inference)
+- Best-effort ClickHouse metric logging from the doc-ocr worker in Kubernetes
 - Canary routing logic (`canary_percent` field in registry)
 - Version pinning support (`?version=v1` bypasses canary)
-- Prometheus metrics instrumentation (Counter, Histogram with labels)
-- `/metrics` endpoints exposed
 
-**Not Deployed**:
+**Not Implemented / Not Available**:
 
-- Prometheus + Grafana pods (scoped out due to minikube RAM constraints: 2 CPU / 4GB)
-- Instrumentation code is complete; just need to `helm install` in production
+- Prometheus instrumentation and `/metrics` endpoints
+- Prometheus and Grafana deployment
+- ClickHouse service in Docker Compose; Compose workers log a warning when metric writes fail
+- ASR worker metric logging
 
 ---
 
@@ -246,9 +235,9 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 | ----------------- | ----------------------------------- | -------------------------------------- |
 | **Gateway**       | FastAPI (Python 3.11+)              | HTTP/WebSocket API server              |
 | **Workers**       | EasyOCR, Whisper                    | Pretrained PyTorch models              |
-| **Queue**         | Redis Streams, Kafka                | Async job distribution                 |
-| **Metadata**      | PostgreSQL                          | Users, keys, models, requests          |
-| **Analytics**     | ClickHouse                          | Request metrics, per-version breakdown |
+| **Queue**         | Redis Streams; dormant Kafka code   | Async job distribution                 |
+| **Metadata**      | PostgreSQL                          | Users, keys, models (the requests table is not currently written) |
+| **Analytics**     | ClickHouse (Kubernetes only)        | Best-effort doc-ocr worker metrics      |
 | **Protocols**     | HTTP/REST, WebSocket, gRPC/Protobuf | Client and internal communication      |
 | **Orchestration** | Docker Compose, Kubernetes          | Dev and local deployment               |
 
@@ -258,23 +247,23 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 
 **Architecture Patterns**:
 
-- Registry-driven routing (eliminates hardcoded dependencies)
+- Registry-driven worker assignment; direct WebSocket inference still has model-specific branches
 - Async queue decoupling (gateway never blocks)
-- Protocol abstraction (HTTP/gRPC switchable via data)
-- Multi-service containers (memory-efficient deployment)
+- WebSocket protocol selection from registry data (HTTP/gRPC)
+- Multi-process worker containers (HTTP + gRPC + Redis consumer)
 - Canary deployments without K8s complexity
 
 **Engineering Skills**:
 
 - API design (FastAPI, REST, WebSocket, gRPC)
-- Queue systems (Redis Streams, Kafka, consumer groups)
+- Queue systems (Redis Streams, consumer groups; dormant Kafka code)
 - Database design (transactional + analytical workloads)
 - Kubernetes manifests (StatefulSets, PVCs, Services)
-- Observability (ClickHouse analytics, Prometheus metrics)
+- Observability (best-effort doc-ocr ClickHouse metrics)
 
 **System Thinking**:
 
-- Trade-offs documented (async vs sync, HTTP vs gRPC, Redis vs Kafka)
+- Trade-offs documented (async vs sync, HTTP vs gRPC, Redis Streams vs dormant Kafka code)
 - Failure modes handled (retry logic, DLQ, idempotency)
 - Honest scope (production gaps clearly stated)
 
@@ -297,7 +286,8 @@ Adding gRPC in Phase 3 = extending this function, not rewriting endpoints. All e
 **Known gaps:**
 
 - Kubernetes secrets committed to repo (NOT production-safe)
-- Prometheus + Grafana instrumented but not deployed (resource constraints)
+- Prometheus instrumentation and Prometheus/Grafana deployment are not implemented
+- ClickHouse is not included in Docker Compose; Compose metric writes produce warnings
 - No Ingress controller or TLS
 - No CI/CD pipeline
 - Tested with small payloads only
@@ -341,7 +331,7 @@ modelmesh/
 
 ```bash
 # Docker Compose
-docker compose up --build
+# See RUNNING.md for start, rebuild, stop, and resume commands.
 
 # Kubernetes (minikube)
 minikube start --cpus=2 --memory=4096
@@ -351,7 +341,7 @@ eval $(minikube docker-env)
 # See SETUP.md for detailed instructions
 ```
 
-**Full setup guide**: [SETUP.md](SETUP.md)
+**Full setup guide**: [SETUP.md](SETUP.md) | **[Run and stop ModelMesh](RUNNING.md)**
 
 ---
 
@@ -361,7 +351,7 @@ eval $(minikube docker-env)
 | --------------------------------------------------- | ------------------------------------------------------------- |
 | [SETUP.md](SETUP.md)                                | Complete setup instructions for Docker Compose and Kubernetes |
 | [Phase 1](docs/Phase1-Core-Gateway.md)              | Core gateway + model registry                                 |
-| [Phase 2](docs/Phase2-Async-Job-Queue.md)           | Async job queues (Redis Streams + Kafka)                      |
+| [Phase 2](docs/Phase2-Async-Job-Queue.md)           | Async job queue (Redis Streams; Kafka code is dormant)        |
 | [Phase 3](docs/Phase3-Streaming-gRPC-WebSockets.md) | WebSockets + gRPC streaming                                   |
 | [Phase 4](docs/Phase4-Kubernetes-Deployment.md)     | Kubernetes deployment on minikube                             |
 | [Phase 5](docs/Phase5-Observability-Canary.md)      | ClickHouse analytics + canary routing                         |

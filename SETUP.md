@@ -40,12 +40,9 @@ Models cached to `~/.EasyOCR/model/` and `~/.cache/whisper/`. First run: 2-3 min
 
 ## Docker Compose (Development)
 
-```bash
-cp .env.example .env  # Set JWT_SECRET
-docker compose up --build
-```
+Use [RUNNING.md](RUNNING.md) for first build, later starts, rebuilds, and stop/resume commands. The gateway is available at `http://localhost:8000`; API docs are at `http://localhost:8000/docs`.
 
-Gateway available at `http://localhost:8000` | Docs: `http://localhost:8000/docs`
+ClickHouse is not included in Docker Compose. The doc-ocr worker attempts best-effort metric writes and logs a warning when ClickHouse is unavailable. ClickHouse metrics are available only in the Kubernetes deployment.
 
 ---
 
@@ -88,9 +85,13 @@ kubectl get svc -n modelmesh
 ### 5. Access gateway
 
 ```bash
-kubectl port-forward -n modelmesh svc/gateway 8000:80
+kubectl port-forward -n modelmesh svc/gateway 8000:8000
 curl http://localhost:8000/v1/models
 ```
+
+The gateway Service listens on port 8000.
+
+The database Secret manifest is `k8s/secrets.yaml`; the gateway JWT Secret manifest is `k8s/gateway/jwt-secret.yaml` (also applied by `kubectl apply -f k8s/gateway/`).
 
 ---
 
@@ -122,6 +123,29 @@ API_KEY=$(curl -X POST http://localhost:8000/v1/auth/api-keys \
   -d '{"rate_limit_per_min": 100}' \
   | jq -r .key)
 ```
+
+### Admin key bootstrap
+
+Registry management endpoints require an **admin API key**, not a JWT. After creating an API key, promote it in Postgres using the raw key. Do not share or commit the raw key:
+
+```bash
+docker compose exec -T postgres psql -U user -d modelmesh -c \
+  "UPDATE api_keys SET is_admin = TRUE
+   WHERE key_hash = encode(digest('<your raw api key>', 'sha256'), 'hex');"
+```
+
+Use that key as a Bearer token for admin endpoints:
+
+```bash
+curl -X PATCH http://localhost:8000/v1/models/<model-id> \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"description":"Updated description"}'
+```
+
+## Sample fixtures
+
+Create the ignored OCR image and silence audio fixtures using the commands in [Phase 0, Step 0.4](docs/00_Run_The_Project_Prompt.md#step-04-create-sample-files). The silence fixture verifies pipeline plumbing, not transcription quality.
 
 ---
 
@@ -158,7 +182,7 @@ curl http://localhost:8000/v1/models
 
 # Register new model (admin only)
 curl -X POST http://localhost:8000/v1/models \
-  -H "Authorization: Bearer $ADMIN_JWT" \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "custom-nlp",
@@ -170,7 +194,7 @@ curl -X POST http://localhost:8000/v1/models \
 
 # Update protocol (HTTP ↔ gRPC switch)
 curl -X PATCH http://localhost:8000/v1/models/<model-id> \
-  -H "Authorization: Bearer $ADMIN_JWT" \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"protocol": "grpc", "endpoint": "doc-ocr-worker:50051"}'
 ```
@@ -181,14 +205,28 @@ curl -X PATCH http://localhost:8000/v1/models/<model-id> \
 
 ### Unit + Integration Tests
 
-```bash
-docker compose up postgres redis -d
-psql postgresql://user:pass@localhost/postgres -c "CREATE DATABASE modelmesh_test;"
-psql postgresql://user:pass@localhost/modelmesh_test < db/init.sql
+Postgres and Redis ports are not published by the default Compose configuration. From Ubuntu WSL, create a temporary override to expose them to local test processes:
 
+```bash
+cat > /tmp/compose.ports.yml <<'EOF'
+services:
+  postgres: { ports: ["5432:5432"] }
+  redis:    { ports: ["6379:6379"] }
+EOF
+docker compose -f docker-compose.yml -f /tmp/compose.ports.yml up -d postgres redis
+docker compose restart gateway doc-ocr-worker asr-worker
+docker compose exec -T postgres psql -U user -d postgres -c "CREATE DATABASE modelmesh_test;"
+docker compose exec -T postgres psql -U user -d modelmesh_test < db/init.sql
+for migration in migrations/*.sql; do
+  docker compose exec -T postgres psql -U user -d modelmesh_test < "$migration"
+done
+
+source modelmesh-env/bin/activate
 pip install -r tests/requirements.txt
 pytest
 ```
+
+If `modelmesh_test` already exists, use a fresh test database name rather than dropping a database that may contain test data. After testing, restore the default Compose configuration with `docker compose up -d postgres redis`.
 
 ### Load Testing (Artillery)
 
@@ -225,6 +263,8 @@ kubectl top pods -n modelmesh
 ```
 
 ### ClickHouse Analytics
+
+ClickHouse and its metrics table are Kubernetes-only; the Docker Compose stack does not include ClickHouse. See [`clickhouse/init.sql`](clickhouse/init.sql) for the table definition. Under Compose, doc-ocr metric writes are skipped with a warning.
 
 ```sql
 SELECT model_name, model_version,

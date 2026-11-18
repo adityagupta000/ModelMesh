@@ -1,0 +1,14 @@
+modelmesh-env/
+.venv/
+venv/
+.git/
+docs/
+tests/
+fixtures/
+migrations/
+__pycache__/
+*.pyc
+*.pdf
+*.log
+.env
+.env.*

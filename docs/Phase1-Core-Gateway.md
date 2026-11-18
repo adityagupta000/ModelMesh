@@ -2,7 +2,7 @@
 
 ## Implementation Status: COMPLETE ✓
 
-**Goal:** Two models, one gateway, fully authenticated, rate-limited, logged — routed entirely through a dynamic Model Registry.
+**Goal:** Two models, one gateway, authenticated and rate-limited, routed through a dynamic Model Registry.
 
 **Actual time:** Completed
 
@@ -13,11 +13,9 @@
 ### Core Features (All Complete)
 
 - EasyOCR document text extraction + Whisper speech-to-text
-- Dynamic Model Registry (zero hardcoded model names)
+- Registry-backed worker assignment; direct inference still has model-name-specific branches (Phase 8)
 - JWT auth + bcrypt passwords + hashed API keys
-- Redis rate limiting (sliding window per key)
-- Redis result caching (SHA256 payload keys)
-- Request logging with model_id + latency
+- Redis fixed-window rate limiting per key
 - Admin-only registry management endpoints
 - Docker Compose setup with health checks
 - pytest test suite
@@ -27,8 +25,8 @@
 ```
 Client → Gateway (FastAPI) → Worker (HTTP)
          ↓
-         PostgreSQL (users, API keys, models, requests)
-         Redis (rate limiting, caching)
+         PostgreSQL (users, API keys, models; requests table is not currently written)
+         Redis (rate limiting; no result cache)
 ```
 
 ---
@@ -37,20 +35,17 @@ Client → Gateway (FastAPI) → Worker (HTTP)
 
 - [x] EasyOCR and Whisper working on real test files
 - [x] `docker compose up` brings up all services
-- [x] No hardcoded model types in gateway
 - [x] `/v1/infer/{model_name}` routes via registry
 - [x] All registry CRUD endpoints work
-- [x] Adding third model requires zero code changes
+- [ ] Adding a third model requires zero code changes (direct inference branches remain; Phase 8)
 - [x] Error handling (404 unknown, 503 disabled, 401 auth, 429 rate limit)
-- [x] Request logging with model_id and latency
-- [x] Redis cache for repeated requests
-- [x] pytest suite passes
+- [ ] pytest suite passes (see the Phase 0 baseline; test repairs are in Phase 7)
 
 ---
 
 ## Key Design Decisions
 
-**Model Registry Pattern**: Gateway never knows what "doc-ocr" or "asr" mean. All routing resolved via database lookup. This enables Phase 3's protocol switching (HTTP → gRPC) and Phase 5's canary deployments without gateway code changes.
+**Model Registry Pattern**: The gateway resolves model metadata and asynchronous worker assignment from the database. Direct WebSocket inference still has model-name-specific branches (Phase 8). The WebSocket path reads protocol from the registry; REST jobs do not.
 
 **Trade-off**: One extra DB query per request. Worth it for flexibility gained in later phases.
 
@@ -74,4 +69,4 @@ Client → Gateway (FastAPI) → Worker (HTTP)
 
 ## Next Phase
 
-Phase 2: Async Job Queue (Redis Streams + Kafka)
+Phase 2: Async Job Queue (Redis Streams; Kafka code is dormant)

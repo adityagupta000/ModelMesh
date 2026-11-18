@@ -2,7 +2,7 @@
 
 ## Implementation Status: COMPLETE ✓
 
-**Goal:** Real-time streaming via WebSockets + high-performance gRPC for internal communication, all registry-driven.
+**Goal:** WebSocket inference via HTTP or gRPC, with protobuf-based gRPC workers.
 
 **Actual time:** Completed
 
@@ -17,23 +17,23 @@
 - Real-time result streaming
 - Test clients (Python CLI + browser HTML)
 
-### Part B: gRPC (Internal Worker Communication) - COMPLETE
+### Part B: gRPC (WebSocket Inference Communication) - COMPLETE
 
 - Protobuf contract (`inference.proto`)
-- Unary RPC (`Predict`) for doc-ocr
+- Unary RPC (`Predict`) for direct inference calls
 - Bidirectional streaming RPC (`PredictStream`) for ASR
 - gRPC servers in all workers
 - gRPC client in gateway
-- Protocol switching via registry (HTTP ↔ gRPC)
+- Protocol selection via registry on the WebSocket inference path (HTTP ↔ gRPC)
 
 ### Architecture
 
 ```
-Client → Gateway (WebSocket) → Worker (gRPC stream) → Partial results
-         Real-time push
+Client → Gateway (WebSocket) → Worker (HTTP or gRPC) → Result
+         Direct inference path; protocol is read from the registry
 
-Client → Gateway (HTTP) → Worker (gRPC unary) → Result
-         Sync path with gRPC backend
+Client → Gateway (REST) → Redis Streams → Worker consumer → Result in Redis
+         Async job path; it does not dispatch on the registry protocol
 ```
 
 ---
@@ -43,8 +43,8 @@ Client → Gateway (HTTP) → Worker (gRPC unary) → Result
 - [x] WebSocket endpoint streaming partial results
 - [x] Test clients (Python + HTML) working
 - [x] `.proto` contract defined
-- [x] Registry rows updated protocol: http → grpc with zero code changes
-- [x] Gateway-worker communication over gRPC
+- [x] WebSocket registry rows can select HTTP or gRPC without gateway code changes
+- [x] Gateway-worker gRPC calls on the WebSocket path
 - [x] Bidirectional streaming gRPC for ASR
 - [x] Before/after latency comparison recorded
 - [x] Can explain whether gRPC helped and why
@@ -71,13 +71,15 @@ Client → Gateway (HTTP) → Worker (gRPC unary) → Result
 
 **Trade-off**: More complex setup (protobuf compilation)
 
-**Protocol Abstraction**: Phase 1's registry design paid off. Switching HTTP → gRPC is a data change:
+**Protocol Abstraction**: The WebSocket inference path reads protocol and endpoint from the registry. Switching HTTP → gRPC there is a data change:
 
 ```sql
 UPDATE models SET protocol = 'grpc', endpoint = 'doc-ocr-worker:50051' WHERE name = 'doc-ocr';
 ```
 
 Zero gateway code changes required.
+
+The REST `/v1/infer/{model_name}` path enqueues to Redis Streams, and worker consumers call their inference functions directly. It does not read the model protocol field or route that request through gRPC.
 
 **Streaming caveat**: Whisper doesn't support token-level streaming. Implementation is chunk-level (send full audio, get result when ready, mark `is_final: true`). Honest streaming behavior, but not token-by-token. Infrastructure ready for future models with true incremental output.
 
@@ -100,13 +102,13 @@ Zero gateway code changes required.
 
 ## Multi-Service Containers
 
-Workers now run THREE services concurrently:
+Workers start THREE separate processes in one container:
 
 1. HTTP server (Phase 1 legacy, port 8001)
 2. gRPC server (Phase 3, port 50051)
 3. Redis consumer (Phase 2, foreground)
 
-Achieved via entrypoint script backgrounding HTTP and gRPC, running consumer in foreground.
+Achieved via entrypoint script backgrounding HTTP and gRPC servers, then running the Redis consumer in the foreground. These processes do not share in-memory model instances; each process can load its own model.
 
 ---
 
