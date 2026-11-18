@@ -181,5 +181,34 @@ async def test_ready_returns_200_when_services_are_up(client):
     assert resp.status_code == 200
 
 
+async def test_upload_over_limit_returns_413(client, regular_key):
+    resp = await client.post(
+        "/v1/infer/doc-ocr",
+        headers=auth_header(regular_key),
+        files={"file": ("large.jpg", b"x" * (main.MAX_UPLOAD_BYTES + 1), "image/jpeg")},
+    )
+    assert resp.status_code == 413
+
+
+async def test_upload_at_limit_is_accepted(monkeypatch, client, regular_key):
+    monkeypatch.setattr(
+        main,
+        "get_model_with_canary",
+        lambda db, name: _async_result(_model("v1")),
+    )
+    monkeypatch.setattr(
+        main,
+        "enqueue_job",
+        lambda redis, model, payload, api_key_id: _async_result("job-limit"),
+    )
+
+    resp = await client.post(
+        "/v1/infer/doc-ocr",
+        headers=auth_header(regular_key),
+        files={"file": ("limit.jpg", b"x" * main.MAX_UPLOAD_BYTES, "image/jpeg")},
+    )
+    assert resp.status_code == 200
+
+
 async def _async_result(value):
     return value

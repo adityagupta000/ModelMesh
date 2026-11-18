@@ -1,11 +1,14 @@
 import grpc
 import json
 import logging
+import os
 import inference_pb2
 import inference_pb2_grpc
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))
+MAX_MSG = MAX_UPLOAD_BYTES + 1048576
 
 
 async def call_worker_grpc(endpoint: str, model_name: str, payload: bytes) -> dict:
@@ -21,7 +24,11 @@ async def call_worker_grpc(endpoint: str, model_name: str, payload: bytes) -> di
         dict: Parsed result from worker
     """
     try:
-        async with grpc.aio.insecure_channel(endpoint) as channel:
+        channel_options = [
+            ("grpc.max_send_message_length", MAX_MSG),
+            ("grpc.max_receive_message_length", MAX_MSG),
+        ]
+        async with grpc.aio.insecure_channel(endpoint, options=channel_options) as channel:
             stub = inference_pb2_grpc.InferenceWorkerStub(channel)
 
             request = inference_pb2.InferenceRequest(
@@ -56,7 +63,11 @@ async def stream_worker_grpc(endpoint: str, model_name: str, chunks):
         dict: Partial results as they arrive
     """
     try:
-        async with grpc.aio.insecure_channel(endpoint) as channel:
+        channel_options = [
+            ("grpc.max_send_message_length", MAX_MSG),
+            ("grpc.max_receive_message_length", MAX_MSG),
+        ]
+        async with grpc.aio.insecure_channel(endpoint, options=channel_options) as channel:
             stub = inference_pb2_grpc.InferenceWorkerStub(channel)
 
             # Create request generator

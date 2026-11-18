@@ -164,11 +164,11 @@ graph TB
 
 ### 3. Multi-Service Containers
 
-**Problem**: Splitting HTTP + gRPC + Redis consumer into separate pods = 3x memory (model weights loaded 3 times).
+**Problem**: Splitting HTTP + gRPC + Redis consumer into separate processes may load model resources more than once.
 
 **Solution**: A worker container starts the HTTP server, gRPC server, and Redis consumer as separate processes. The processes do not share in-memory model instances.
 
-**Trade-off**: Each process can load its own model instance; running services in one container does not mean model weights are loaded only once.
+**Trade-off**: Each process can load its own model instance; running services in one container does not mean model weights are loaded only once. Final Phase 9 Compose measurements showed the ASR container at 1.084 GiB and the doc-ocr container at 1.185 GiB; Kubernetes measurements require a running cluster.
 
 ### 4. Protocol Selection
 

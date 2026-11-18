@@ -14,6 +14,7 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          args: ["--maxmemory", "200mb", "--maxmemory-policy", "noeviction"]
           ports:
             - containerPort: 6379
           resources:

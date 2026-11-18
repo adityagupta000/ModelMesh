@@ -1,15 +1,18 @@
 import os
 import tempfile
+import threading
 import whisper
 
 _model = None
+_lock = threading.Lock()
 
 
 def _load_model():
     global _model
-    if _model is None:
-        model_size = os.getenv("WHISPER_MODEL", "tiny")
-        _model = whisper.load_model(model_size)
+    with _lock:
+        if _model is None:
+            model_size = os.getenv("WHISPER_MODEL", "tiny")
+            _model = whisper.load_model(model_size)
     return _model
 
 

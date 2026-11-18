@@ -3,13 +3,17 @@ import json
 import time
 import logging
 import io
+import os
 from concurrent import futures
 import inference_pb2
 import inference_pb2_grpc
-from inference import transcribe
+from inference import transcribe, _load_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))
+MAX_MSG = MAX_UPLOAD_BYTES + 1048576
+GRPC_MAX_WORKERS = int(os.getenv("GRPC_MAX_WORKERS", "10"))
 
 
 class InferenceWorkerServicer(inference_pb2_grpc.InferenceWorkerServicer):
@@ -86,7 +90,14 @@ class InferenceWorkerServicer(inference_pb2_grpc.InferenceWorkerServicer):
 
 def serve(port=50051):
     """Start the gRPC server."""
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    _load_model()
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=GRPC_MAX_WORKERS),
+        options=[
+            ("grpc.max_send_message_length", MAX_MSG),
+            ("grpc.max_receive_message_length", MAX_MSG),
+        ],
+    )
     inference_pb2_grpc.add_InferenceWorkerServicer_to_server(
         InferenceWorkerServicer(), server
     )

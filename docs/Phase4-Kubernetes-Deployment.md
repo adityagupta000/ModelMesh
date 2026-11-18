@@ -162,7 +162,7 @@ kubectl top nodes
 
 **Configured gateway liveness probe**: `GET /health`.
 
-Workers expose `/health` endpoints, but their Kubernetes Deployments do not define readiness or liveness probes yet.
+Both worker Deployments define `/health` readiness and liveness probes. The entrypoint supervises HTTP, gRPC, and Redis consumer processes and exits non-zero if a child process dies.
 
 Failed probes trigger Kubernetes pod restarts.
 

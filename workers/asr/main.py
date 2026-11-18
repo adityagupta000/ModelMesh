@@ -1,5 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from inference import transcribe
+from inference import transcribe, _load_model
 
 AUDIO_MIME_TYPES = {
     "audio/wav", "audio/wave", "audio/x-wav",
@@ -9,6 +9,11 @@ AUDIO_MIME_TYPES = {
 }
 
 app = FastAPI(title="ASR Worker", version="1.0.0")
+
+
+@app.on_event("startup")
+async def startup():
+    _load_model()
 
 
 @app.post("/infer")

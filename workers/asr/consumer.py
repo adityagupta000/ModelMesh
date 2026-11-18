@@ -4,27 +4,30 @@ import logging
 import os
 import time
 from redis.asyncio import Redis
-from inference import transcribe
+from inference import transcribe, _load_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-WORKER_NAME = "asr-worker"
+WORKER_NAME = os.getenv("WORKER_NAME", "asr-worker")
+CONSUMER = f"{WORKER_NAME}-{os.getenv('HOSTNAME', '1')}"
+RECLAIM_IDLE_MS = int(os.getenv("RECLAIM_IDLE_MS", "300000"))
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 MAX_RETRIES = 3
-RETRY_DELAY_BASE = 2  # seconds
+RETRY_DELAY_BASE = 2
+STREAM_MAXLEN = int(os.getenv("STREAM_MAXLEN", "10000"))
+
+
+class PermanentError(Exception):
+    """Input that retrying cannot fix."""
 
 
 async def update_job_status(redis: Redis, job_id: str, status: str, result: dict = None, error: str = None):
-    """Update job status in Redis."""
     data = {"job_id": job_id, "status": status}
-
     if result:
         data["result"] = result
-
     if error:
         data["error"] = error
-
     if status in ("success", "failed"):
         await redis.setex(f"result:{job_id}", 7200, json.dumps(data))
         await redis.delete(f"job:{job_id}:status")
@@ -32,150 +35,168 @@ async def update_job_status(redis: Redis, job_id: str, status: str, result: dict
         await redis.setex(f"job:{job_id}:status", 3600, json.dumps(data))
 
 
-async def handle_job(redis: Redis, job_data: dict, entry_id: str) -> bool:
-    """
-    Process a single job.
+def decode_fields(fields):
+    decoded = {}
+    for key, value in fields.items():
+        k = key.decode() if isinstance(key, bytes) else key
+        if k == "payload":
+            decoded[k] = value
+        elif isinstance(value, bytes):
+            decoded[k] = value.decode()
+        else:
+            decoded[k] = value
+    return decoded
 
-    Returns:
-        bool: True if successful, False if should retry
-    """
+
+async def handle_job(redis: Redis, job_data: dict) -> tuple[Exception | None, int]:
+    start = time.monotonic()
     job_id = job_data["job_id"]
-    payload = job_data["payload"]
-
     try:
         logger.info(f"Processing job {job_id}")
         await update_job_status(redis, job_id, "processing")
-
-        # Run inference
+        payload = job_data.get("payload") or await redis.get(f"payload:{job_id}")
+        if payload is None:
+            return PermanentError("payload expired"), int((time.monotonic() - start) * 1000)
+        inference_start = time.monotonic()
         result = transcribe(payload)
-
-        # Store result
+        elapsed_ms = int((time.monotonic() - inference_start) * 1000)
         await update_job_status(redis, job_id, "success", result=result)
-        logger.info(f"Job {job_id} completed successfully")
-        return True
+        logger.info(f"Job {job_id} completed successfully ({elapsed_ms}ms)")
+        return None, int((time.monotonic() - start) * 1000)
+    except PermanentError as exc:
+        return exc, int((time.monotonic() - start) * 1000)
+    except ValueError as exc:
+        return PermanentError(str(exc)), int((time.monotonic() - start) * 1000)
+    except Exception as exc:
+        return exc, int((time.monotonic() - start) * 1000)
 
-    except Exception as e:
-        logger.error(f"Job {job_id} failed: {e}")
-        return False
+
+async def fail_permanently(redis, job_data, entry_id, group, error, elapsed_ms):
+    job_id = job_data["job_id"]
+    await update_job_status(redis, job_id, "failed", error=str(error))
+    await redis.xadd(
+        "inference_jobs_dlq",
+        {"job_id": job_id, "reason": str(error), "elapsed_ms": str(elapsed_ms)},
+        maxlen=1000,
+        approximate=True,
+    )
+    await redis.xack("inference_jobs", group, entry_id)
 
 
-async def handle_failure(redis: Redis, job_data: dict, entry_id: str, group: str, error: Exception):
-    """Handle job failure with retry logic and dead-letter queue."""
+async def handle_failure(redis, job_data, entry_id, group, error, elapsed_ms):
     job_id = job_data["job_id"]
     retry_count = int(job_data.get("retry_count", 0))
-
     if retry_count < MAX_RETRIES:
-        # Retry with exponential backoff
         retry_count += 1
         delay = RETRY_DELAY_BASE ** retry_count
-        logger.warning(f"Job {job_id} retry {retry_count}/{MAX_RETRIES} after {delay}s")
-
         await asyncio.sleep(delay)
-
-        # Re-enqueue with updated retry count
         job_data["retry_count"] = str(retry_count)
-        await redis.xadd("inference_jobs", job_data)
-
-        # Acknowledge original message
+        await redis.xadd(
+            "inference_jobs",
+            job_data,
+            maxlen=STREAM_MAXLEN,
+            approximate=True,
+        )
         await redis.xack("inference_jobs", group, entry_id)
     else:
-        # Move to dead-letter queue
-        logger.error(f"Job {job_id} exceeded max retries, moving to DLQ")
-        job_data["dlq_reason"] = str(error)
-        job_data["dlq_timestamp"] = str(int(time.time()))
-        await redis.xadd("inference_jobs_dlq", job_data)
-
-        # Mark as failed
         await update_job_status(redis, job_id, "failed", error=str(error))
-
-        # Acknowledge original message
+        await redis.xadd(
+            "inference_jobs_dlq",
+            {"job_id": job_id, "reason": str(error), "elapsed_ms": str(elapsed_ms)},
+            maxlen=1000,
+            approximate=True,
+        )
         await redis.xack("inference_jobs", group, entry_id)
 
 
-async def log_consumer_lag(redis: Redis, group: str):
-    """Log consumer lag metrics for monitoring."""
+async def process_entry(redis, group, entry_id, fields):
+    job_data = decode_fields(fields)
+    if job_data.get("worker_name") != WORKER_NAME:
+        await redis.xack("inference_jobs", group, entry_id)
+        return
+    error, elapsed_ms = await handle_job(redis, job_data)
+    if error is None:
+        await redis.xack("inference_jobs", group, entry_id)
+    elif isinstance(error, PermanentError):
+        await fail_permanently(redis, job_data, entry_id, group, error, elapsed_ms)
+    else:
+        await handle_failure(redis, job_data, entry_id, group, error, elapsed_ms)
+
+
+async def log_consumer_lag(redis, group):
     try:
         stream_length = await redis.xlen("inference_jobs")
         pending_info = await redis.xpending("inference_jobs", group)
-
         if pending_info:
             pending_count = pending_info["pending"]
             logger.info(f"[{WORKER_NAME}] Stream length: {stream_length}, Pending: {pending_count}")
-    except Exception as e:
-        logger.debug(f"Could not fetch lag metrics: {e}")
+            if stream_length > STREAM_MAXLEN * 0.8:
+                logger.warning(
+                    f"[{WORKER_NAME}] Stream length {stream_length} exceeds 80% of limit {STREAM_MAXLEN}"
+                )
+    except Exception as exc:
+        logger.debug(f"Could not fetch lag metrics: {exc}")
+
+
+async def reclaim_stale(redis, group):
+    next_id = "0-0"
+    for _ in range(100):
+        res = await redis.xautoclaim(
+            "inference_jobs",
+            group,
+            CONSUMER,
+            RECLAIM_IDLE_MS,
+            start_id=next_id,
+            count=10,
+        )
+        next_id = res[0]
+        entries = res[1]
+        if len(res) > 2 and res[2]:
+            await redis.xack("inference_jobs", group, *res[2])
+        for entry_id, fields in entries:
+            await process_entry(redis, group, entry_id, fields)
+        if next_id in (b"0-0", "0-0"):
+            break
 
 
 async def consume_loop():
-    """Main consumer loop for Redis Streams."""
+    _load_model()
     redis = Redis.from_url(REDIS_URL, decode_responses=False)
     group = f"{WORKER_NAME}_group"
-
     try:
-        # Create consumer group if it doesn't exist
         try:
             await redis.xgroup_create("inference_jobs", group, id="0", mkstream=True)
             logger.info(f"Created consumer group: {group}")
         except Exception:
             logger.info(f"Consumer group {group} already exists")
-
         logger.info(f"Starting consumer loop for {WORKER_NAME}")
+        await reclaim_stale(redis, group)
         lag_counter = 0
-
         while True:
             try:
-                # Read messages from the stream
                 messages = await redis.xreadgroup(
                     group,
-                    f"{WORKER_NAME}-1",
+                    CONSUMER,
                     {"inference_jobs": ">"},
                     count=1,
-                    block=5000
+                    block=100,
                 )
-
-                # Log consumer lag periodically (every 10 iterations)
                 lag_counter += 1
                 if lag_counter >= 10:
                     await log_consumer_lag(redis, group)
+                    await reclaim_stale(redis, group)
                     lag_counter = 0
-
                 if not messages:
                     continue
-
-                for stream, entries in messages:
+                for _, entries in messages:
                     for entry_id, fields in entries:
-                        # Decode fields
-                        job_data = {
-                            k.decode() if isinstance(k, bytes) else k:
-                            v.decode() if isinstance(v, bytes) and k.decode() != "payload" else v
-                            for k, v in fields.items()
-                        }
-
-                # Note: we filter by worker_name, not model status. A job enqueued before
-                # the model was disabled will still process to completion. Disabling a model
-                # stops new jobs from being accepted, not in-flight ones.
-                # Filter by worker_name
-                        if job_data.get("worker_name") != WORKER_NAME:
-                            logger.debug(f"Skipping job for different worker: {job_data.get('worker_name')}")
-                            await redis.xack("inference_jobs", group, entry_id)
-                            continue
-
-                        # Process job
-                        success = await handle_job(redis, job_data, entry_id)
-
-                        if success:
-                            # Acknowledge successful processing
-                            await redis.xack("inference_jobs", group, entry_id)
-                        else:
-                            # Handle failure with retry logic
-                            await handle_failure(redis, job_data, entry_id, group, Exception("Processing failed"))
-
+                        await process_entry(redis, group, entry_id, fields)
             except asyncio.CancelledError:
                 logger.info("Consumer loop cancelled")
                 break
-            except Exception as e:
-                logger.error(f"Error in consumer loop: {e}")
+            except Exception as exc:
+                logger.error(f"Error in consumer loop: {exc}")
                 await asyncio.sleep(1)
-
     finally:
         await redis.close()
 

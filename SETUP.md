@@ -42,6 +42,19 @@ Models cached to `~/.EasyOCR/model/` and `~/.cache/whisper/`. First run: 2-3 min
 
 Use [RUNNING.md](RUNNING.md) for first build, later starts, rebuilds, and stop/resume commands. The gateway is available at `http://localhost:8000`; API docs are at `http://localhost:8000/docs`.
 
+### Reliability environment variables
+
+| Variable | Default | Used by |
+|---|---:|---|
+| `MAX_UPLOAD_BYTES` | `10485760` | gateway and workers |
+| `PAYLOAD_TTL_SECONDS` | `3600` | gateway and workers |
+| `STREAM_MAXLEN` | `10000` | gateway and workers |
+| `RECLAIM_IDLE_MS` | `300000` | workers |
+| `WORKER_NAME` | service-specific | workers |
+| `GRPC_MAX_WORKERS` | `10` locally | workers |
+
+Kubernetes worker pods set `GRPC_MAX_WORKERS=3` because they are limited to one CPU.
+
 ClickHouse is not included in Docker Compose. The doc-ocr worker attempts best-effort metric writes and logs a warning when ClickHouse is unavailable. ClickHouse metrics are available only in the Kubernetes deployment.
 
 ---
