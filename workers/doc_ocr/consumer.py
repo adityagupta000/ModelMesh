@@ -14,6 +14,8 @@ WORKER_NAME = "doc-ocr-worker"
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 2  # seconds
+PAYLOAD_TTL = int(os.getenv("PAYLOAD_TTL_SECONDS", "3600"))
+STREAM_MAXLEN = int(os.getenv("STREAM_MAXLEN", "10000"))
 
 
 async def update_job_status(redis: Redis, job_id: str, status: str, result: dict = None, error: str = None):
@@ -35,7 +37,9 @@ async def update_job_status(redis: Redis, job_id: str, status: str, result: dict
 
 async def handle_job(redis: Redis, job_data: dict, entry_id: str) -> bool:
     job_id = job_data["job_id"]
-    payload = job_data["payload"]
+    payload = job_data.get("payload") or await redis.get(f"payload:{job_id}")
+    if payload is None:
+        raise Exception("payload expired")
     model_id = job_data.get("model_id", "")
     model_name = job_data.get("model_name", "")
     model_version = job_data.get("model_version", "")
@@ -74,7 +78,12 @@ async def handle_failure(redis: Redis, job_data: dict, entry_id: str, group: str
 
         # Re-enqueue with updated retry count
         job_data["retry_count"] = str(retry_count)
-        await redis.xadd("inference_jobs", job_data)
+        await redis.xadd(
+            "inference_jobs",
+            job_data,
+            maxlen=STREAM_MAXLEN,
+            approximate=True,
+        )
 
         # Acknowledge original message
         await redis.xack("inference_jobs", group, entry_id)
@@ -83,7 +92,12 @@ async def handle_failure(redis: Redis, job_data: dict, entry_id: str, group: str
         logger.error(f"Job {job_id} exceeded max retries, moving to DLQ")
         job_data["dlq_reason"] = str(error)
         job_data["dlq_timestamp"] = str(int(time.time()))
-        await redis.xadd("inference_jobs_dlq", job_data)
+        await redis.xadd(
+            "inference_jobs_dlq",
+            job_data,
+            maxlen=1000,
+            approximate=True,
+        )
 
         # Mark as failed
         await update_job_status(redis, job_id, "failed", error=str(error))
@@ -101,6 +115,10 @@ async def log_consumer_lag(redis: Redis, group: str):
         if pending_info:
             pending_count = pending_info["pending"]
             logger.info(f"[{WORKER_NAME}] Stream length: {stream_length}, Pending: {pending_count}")
+            if stream_length > STREAM_MAXLEN * 0.8:
+                logger.warning(
+                    f"[{WORKER_NAME}] Stream length {stream_length} exceeds 80% of limit {STREAM_MAXLEN}"
+                )
     except Exception as e:
         logger.debug(f"Could not fetch lag metrics: {e}")
 

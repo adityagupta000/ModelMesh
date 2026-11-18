@@ -1,9 +1,13 @@
 import json
+import os
 import uuid
 from typing import Optional
 from redis.asyncio import Redis
 
 from registry import ModelRecord
+
+PAYLOAD_TTL = int(os.getenv("PAYLOAD_TTL_SECONDS", "3600"))
+STREAM_MAXLEN = int(os.getenv("STREAM_MAXLEN", "10000"))
 
 
 async def enqueue_job(redis: Redis, model: ModelRecord, payload: bytes, api_key_id: str) -> str:
@@ -21,16 +25,17 @@ async def enqueue_job(redis: Redis, model: ModelRecord, payload: bytes, api_key_
     """
     job_id = str(uuid.uuid4())
 
+    await redis.setex(f"payload:{job_id}", PAYLOAD_TTL, payload)
+
     await redis.xadd("inference_jobs", {
         "job_id": job_id,
         "model_id": model.id,
         "model_name": model.name,
         "model_version": model.version,
         "worker_name": model.worker_name,
-        "payload": payload,
         "api_key_id": api_key_id,
         "status": "queued"
-    })
+    }, maxlen=STREAM_MAXLEN, approximate=True)
 
     # Store initial job status
     await redis.setex(
