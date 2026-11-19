@@ -114,6 +114,29 @@ Each inference request that reaches a final outcome produces exactly one row. Re
 
 Both via `PATCH /v1/models/{id}`. Zero code changes.
 
+## Canary Rollback Guard (Optional Phase 11)
+
+`gateway/canary_guard.py` is a standalone CLI; it is not part of gateway request handling. It checks active model versions using ClickHouse final-outcome metrics. For each model with at least two active versions, the highest numeric version is the canary, the lowest is stable, and intermediate versions are ignored. If the highest version is already at 0%, the guard skips the ClickHouse query and reports `noop`. This keeps the required post-rollback noop run observable.
+
+The guard uses two rollback rules:
+
+- **Starvation:** estimates expected canary completions from stable completions and `canary_percent`. If expected canary traffic meets the minimum and observed canary completions are below 20% of expected, it rolls back. This catches workers that are down and therefore produce no error metrics.
+- **Error-rate delta:** after both versions meet the minimum sample count, rolls back only when the canary error rate exceeds stable by more than the configured margin. If both versions fail at similar rates, it holds.
+
+Defaults are a 10-minute sliding window, 30 minimum requests per version, and a 0.10 error-rate delta. Without `--apply`, the guard is a dry run and changes nothing. With `--apply`, it only sets the canary's `canary_percent` to 0; it does not disable or delete the canary.
+
+Limitations:
+
+- Queued jobs assigned to a rolled-back canary remain unprocessed until their payload and status keys expire; polling clients eventually receive 404.
+- The window is a sliding look-back, not an exact count since the canary started.
+- When stable traffic is thin, the guard holds rather than rolling back on insufficient data.
+
+### Phase 11 live demos
+
+Demo A used 90 ASR submissions at a 20% canary split: 73 were assigned to stable `v1` and 17 to the nonexistent `asr-worker-v2`. The dry run observed 73 stable completions and no canary completions, and returned `rollback` with the reason `canary starved: 0 completed vs about 18 expected`. The `--apply` run returned `rollback` with `applied: true`; a registry read confirmed `canary_percent=0`. The next run returned `noop` with `canary already at 0`.
+
+Demo B used 10 **synthetic** `error` rows for `asr:v2`. With 73 successful stable `v1` rows and 10 canary error rows, the dry run returned `rollback` with `canary error rate 1.00 vs stable 0.00`; it did not apply the change. Cleanup reset the canary to 0, disabled the demo v2 model, and removed all 10 synthetic rows (verified count: 0).
+
 ---
 
 ## Bugs Found and Fixed
@@ -200,9 +223,8 @@ Metric insert failures are caught and logged. Phase 10 moves the synchronous ins
 
 1. **Deploy genuine v2**: Different preprocessing or confidence threshold, not same worker
 2. **Add Prometheus + Grafana**: Real-time dashboards and instrumentation (not implemented)
-3. **Automated rollback triggers**: Auto-disable v2 if error rate exceeds threshold
-4. **Statistical significance testing**: Don't promote on 1-2 samples, need real volume
-5. **Multi-model canary**: Test framework with multiple models simultaneously
+3. **Statistical significance testing**: Don't promote on 1-2 samples, need real volume
+4. **Multi-model canary**: Test framework with multiple models simultaneously
 
 ---
 
@@ -215,6 +237,8 @@ Metric insert failures are caught and logged. Phase 10 moves the synchronous ins
 - `gateway/main.py` - Includes `get_model_with_canary()`
 - `gateway/registry.py` - Added `canary_percent`, `list_versions()`
 - `gateway/schemas.py` - Updated Pydantic models
+- `gateway/canary_guard.py` - Optional standalone Phase 11 rollback guard
+- `tests/test_canary_guard.py` - Guard decision and model-selection tests
 
 ---
 
@@ -229,8 +253,7 @@ Metric insert failures are caught and logged. Phase 10 moves the synchronous ins
 **What needs work:**
 
 - Prometheus instrumentation and Prometheus + Grafana deployment
-- Automated rollback rules
-- Statistical significance checks
+- Statistical significance checks and alerting for scheduled guard runs
 - Production secret management for ClickHouse
 
 ---
@@ -239,4 +262,4 @@ Metric insert failures are caught and logged. Phase 10 moves the synchronous ins
 
 Canary routing is registry-driven. Both workers write one best-effort ClickHouse metric row for each completed job; the gateway does not write metrics, and unfinished jobs have no row. ClickHouse is Kubernetes-only, not in Compose. Prometheus instrumentation and Prometheus/Grafana are not implemented.
 
-**Interview talking point**: "Built registry-driven canary routing, so model-version traffic splits are controlled by registry data. Both workers write one best-effort ClickHouse metric row per completed job for version, latency, and final status; the gateway does not write metrics, and ClickHouse is not included in Docker Compose. Prometheus/Grafana and automated rollback are not implemented."
+**Interview talking point**: "Built registry-driven canary routing, so model-version traffic splits are controlled by registry data. Both workers write one best-effort ClickHouse metric row per completed job for version, latency, and final status; the gateway does not write metrics, and ClickHouse is not included in Docker Compose. An optional standalone guard detects canary starvation or error-rate regressions and can set the percentage to zero; Prometheus/Grafana are not implemented."

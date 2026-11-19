@@ -144,19 +144,56 @@ API_KEY=$(curl -X POST http://localhost:8000/v1/auth/api-keys \
 Registry management endpoints require an **admin API key**, not a JWT. After creating an API key, promote it in Postgres using the raw key. Do not share or commit the raw key:
 
 ```bash
-docker compose exec -T postgres psql -U user -d modelmesh -c \
-  "UPDATE api_keys SET is_admin = TRUE
-   WHERE key_hash = encode(digest('<your raw api key>', 'sha256'), 'hex');"
+printf "UPDATE api_keys SET is_admin = TRUE WHERE key_hash = encode(digest('%s','sha256'),'hex') RETURNING id, is_admin;\n" "$API_KEY" \
+  | docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U user -d modelmesh
+export ADMIN_KEY="$API_KEY"
 ```
 
-Use that key as a Bearer token for admin endpoints:
+Keep using the same shell after exporting `ADMIN_KEY`; do not print or commit it. The raw key is returned only when the API key is created.
+
+To make the key available to later WSL shells, save it once in the git-ignored `.env`:
+
+```bash
+test -n "${ADMIN_KEY:-}" || { echo "ADMIN_KEY is empty"; exit 1; }
+printf '\nADMIN_KEY=%s\n' "$ADMIN_KEY" >> .env
+```
+
+In a new WSL shell at the repository root, load local settings without displaying them:
+
+```bash
+set -a
+. ./.env
+set +a
+```
+
+Use the admin key as a Bearer token for registry endpoints:
 
 ```bash
 curl -X PATCH http://localhost:8000/v1/models/<model-id> \
-  -H "Authorization: Bearer $ADMIN_API_KEY" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"description":"Updated description"}'
 ```
+
+## Canary rollback guard
+
+The optional `gateway/canary_guard.py` script checks active canaries against final-outcome ClickHouse metrics. It is a dry run by default. It requires ClickHouse only when a positive-percentage canary exists; for a temporary local ClickHouse, set `CLICKHOUSE_HOST=localhost`. Kubernetes uses the default service name `clickhouse`. When the highest active version is already at 0%, it skips ClickHouse and reports `noop`.
+
+Defaults: 10-minute sliding window, 30 minimum requests per version, and a 0.10 error-rate delta. The guard checks both canary starvation and whether the canary error rate exceeds stable by more than that delta.
+
+```bash
+# Dry run: prints one JSON line per active version pair and changes nothing.
+GATEWAY_URL=http://localhost:8000 CLICKHOUSE_HOST=localhost \
+  python gateway/canary_guard.py
+
+# Apply only a rollback decision; ADMIN_KEY must be exported in this shell.
+GATEWAY_URL=http://localhost:8000 CLICKHOUSE_HOST=localhost \
+  python gateway/canary_guard.py --apply
+```
+
+`--apply` only sets the selected canary's `canary_percent` to `0`; it never disables or deletes a model. Do not pass the admin key as a command-line argument.
+
+See [Phase 5 observability and canary documentation](docs/Phase5-Observability-Canary.md#canary-rollback-guard-optional-phase-11) for the rules, limitations, and verification notes.
 
 ## Sample fixtures
 
