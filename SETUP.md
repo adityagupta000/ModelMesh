@@ -52,10 +52,12 @@ Use [RUNNING.md](RUNNING.md) for first build, later starts, rebuilds, and stop/r
 | `RECLAIM_IDLE_MS` | `300000` | workers |
 | `WORKER_NAME` | service-specific | workers |
 | `GRPC_MAX_WORKERS` | `10` locally | workers |
+| `CLICKHOUSE_HOST` | `clickhouse` | worker metrics |
+| `CLICKHOUSE_PORT` | `8123` | worker metrics |
 
 Kubernetes worker pods set `GRPC_MAX_WORKERS=3` because they are limited to one CPU.
 
-ClickHouse is not included in Docker Compose. The doc-ocr worker attempts best-effort metric writes and logs a warning when ClickHouse is unavailable. ClickHouse metrics are available only in the Kubernetes deployment.
+ClickHouse is not included in Docker Compose; it is available in the Kubernetes deployment. Each worker writes exactly one metric row when a job reaches a final outcome (success or terminal failure); retry attempts that continue do not produce rows. The gateway does not write metrics, and jobs that never finish produce no row. Worker inserts are best-effort: a failure does not fail inference, and that worker skips further inserts for 60 seconds after one warning.
 
 ---
 
@@ -293,13 +295,24 @@ kubectl top pods -n modelmesh
 
 ### ClickHouse Analytics
 
-ClickHouse and its metrics table are Kubernetes-only; the Docker Compose stack does not include ClickHouse. See [`clickhouse/init.sql`](clickhouse/init.sql) for the table definition. Under Compose, doc-ocr metric writes are skipped with a warning.
+ClickHouse and its metrics table are Kubernetes-only; the Docker Compose stack does not include ClickHouse. Both workers write one row per completed job. See [`clickhouse/init.sql`](clickhouse/init.sql) for the table definition. Configure worker connections with `CLICKHOUSE_HOST` and `CLICKHOUSE_PORT`.
 
 ```sql
 SELECT model_name, model_version,
-       count() as requests,
-       avg(latency_ms),
-       quantile(0.95)(latency_ms) as p95
+       count() AS successful_jobs,
+       avg(latency_ms) AS avg_latency_ms,
+       quantile(0.95)(latency_ms) AS p95_latency_ms
+FROM request_metrics
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND status = 'success'
+GROUP BY model_name, model_version;
+```
+
+Error rate uses all final rows (both successes and errors):
+
+```sql
+SELECT model_name, model_version,
+       countIf(status = 'error') / count() AS error_rate
 FROM request_metrics
 WHERE timestamp > now() - INTERVAL 1 HOUR
 GROUP BY model_name, model_version;

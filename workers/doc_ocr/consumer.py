@@ -53,9 +53,6 @@ def decode_fields(fields):
 async def handle_job(redis: Redis, job_data: dict) -> tuple[Exception | None, int]:
     start = time.monotonic()
     job_id = job_data["job_id"]
-    model_id = job_data.get("model_id", "")
-    model_name = job_data.get("model_name", "")
-    model_version = job_data.get("model_version", "")
 
     try:
         logger.info(f"Processing job {job_id}")
@@ -68,18 +65,14 @@ async def handle_job(redis: Redis, job_data: dict) -> tuple[Exception | None, in
         result = extract_text(payload)
         elapsed_ms = int((time.monotonic() - inference_start) * 1000)
         await update_job_status(redis, job_id, "success", result=result)
-        log_metric(job_id, model_id, model_name, model_version, WORKER_NAME, "success", elapsed_ms)
         logger.info(f"Job {job_id} completed successfully ({elapsed_ms}ms)")
         return None, int((time.monotonic() - start) * 1000)
     except PermanentError as exc:
-        log_metric(job_id, model_id, model_name, model_version, WORKER_NAME, "error", 0)
         return exc, int((time.monotonic() - start) * 1000)
     except ValueError as exc:
         permanent = PermanentError(str(exc))
-        log_metric(job_id, model_id, model_name, model_version, WORKER_NAME, "error", 0)
         return permanent, int((time.monotonic() - start) * 1000)
     except Exception as exc:
-        log_metric(job_id, model_id, model_name, model_version, WORKER_NAME, "error", 0)
         return exc, int((time.monotonic() - start) * 1000)
 
 
@@ -96,6 +89,16 @@ async def fail_permanently(redis, job_data, entry_id, group, error, elapsed_ms):
         },
         maxlen=1000,
         approximate=True,
+    )
+    await asyncio.to_thread(
+        log_metric,
+        job_id,
+        job_data.get("model_id", ""),
+        job_data.get("model_name", ""),
+        job_data.get("model_version", ""),
+        WORKER_NAME,
+        "error",
+        elapsed_ms,
     )
     await redis.xack("inference_jobs", group, entry_id)
 
@@ -130,6 +133,16 @@ async def handle_failure(redis, job_data, entry_id, group, error, elapsed_ms):
             maxlen=1000,
             approximate=True,
         )
+        await asyncio.to_thread(
+            log_metric,
+            job_id,
+            job_data.get("model_id", ""),
+            job_data.get("model_name", ""),
+            job_data.get("model_version", ""),
+            WORKER_NAME,
+            "error",
+            elapsed_ms,
+        )
         await redis.xack("inference_jobs", group, entry_id)
 
 
@@ -140,6 +153,16 @@ async def process_entry(redis, group, entry_id, fields):
         return
     error, elapsed_ms = await handle_job(redis, job_data)
     if error is None:
+        await asyncio.to_thread(
+            log_metric,
+            job_data["job_id"],
+            job_data.get("model_id", ""),
+            job_data.get("model_name", ""),
+            job_data.get("model_version", ""),
+            WORKER_NAME,
+            "success",
+            elapsed_ms,
+        )
         await redis.xack("inference_jobs", group, entry_id)
     elif isinstance(error, PermanentError):
         await fail_permanently(redis, job_data, entry_id, group, error, elapsed_ms)

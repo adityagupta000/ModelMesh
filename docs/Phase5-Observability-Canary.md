@@ -1,11 +1,13 @@
 # Phase 5 — Observability + Canary Deployment
 
-## Implementation Status: PARTIAL
+## Implementation Status: PARTIAL (75%)
 
-**Goal:** Best-effort ClickHouse metrics and registry-driven canary routing. Prometheus and Grafana are not implemented.
+**Goal:** Best-effort ClickHouse metrics and registry-driven canary routing. Prometheus instrumentation and Prometheus/Grafana are not implemented.
 
-**What's Done:** Kubernetes ClickHouse setup, doc-ocr worker metric logging, canary routing logic
-**What's Missing:** Compose ClickHouse, ASR metric logging, Prometheus instrumentation, and Grafana
+The 75% score is 9 of 12 scoped outcomes: Kubernetes ClickHouse deployment, table schema, doc-ocr metrics, ASR metrics, the canary registry field, canary routing, version pinning, canary verification, and the postmortem. The three not delivered are a Compose ClickHouse service, Prometheus instrumentation, and Prometheus/Grafana deployment.
+
+**What's Done:** Kubernetes ClickHouse setup, final-outcome metrics from both workers, and canary routing logic
+**What's Missing:** Compose ClickHouse, Prometheus instrumentation, and Grafana
 
 ---
 
@@ -15,10 +17,13 @@
 
 - ClickHouse Kubernetes deployment + service
 - `request_metrics` table schema (columnar, MergeTree engine)
-- Best-effort metric logging from the doc-ocr worker only
-- Fire-and-forget metric writes (never block inference)
+- Best-effort metric logging from both workers
+- Exactly one metric row per completed job, on its final outcome; retries that continue do not create rows
+- Metric writes run off the event loop; after an insert failure, each worker skips further attempts for 60 seconds and emits at most one warning per back-off window
 - Metrics include: request_id, model_id, model_name, model_version, worker_name, latency_ms, status
 - Table DDL: [`clickhouse/init.sql`](../clickhouse/init.sql) (reconstructed; verify against a live table)
+
+Every request that reaches a final outcome is logged exactly once by its worker. The gateway does not write metric rows. Jobs that never reach a final outcome, such as a queued job whose worker never completes it, produce no row. ClickHouse is deployed in Kubernetes only; Docker Compose has no ClickHouse service.
 
 ### Canary Routing Logic - COMPLETE
 
@@ -43,7 +48,7 @@ There is no Prometheus client instrumentation or `/metrics` endpoint in the curr
 
 Prometheus instrumentation, Prometheus, and Grafana are not included in the current implementation.
 
-ClickHouse metrics are Kubernetes-only. The Compose stack does not include ClickHouse; doc-ocr metric writes are skipped with a warning.
+ClickHouse remains Kubernetes-only. Docker Compose has no ClickHouse service; when a worker cannot reach ClickHouse, inference continues and that worker backs off metric inserts for 60 seconds after a failed attempt.
 
 ---
 
@@ -81,14 +86,26 @@ Gateway's `get_model_with_canary()` function:
 
 ```sql
 SELECT model_name, model_version,
-       count() as requests,
-       avg(latency_ms) as avg_latency,
-       quantile(0.95)(latency_ms) as p95_latency,
-       countIf(status = 'error') / count() as error_rate
+       count() AS successful_jobs,
+       avg(latency_ms) AS avg_latency_ms,
+       quantile(0.95)(latency_ms) AS p95_latency_ms
+FROM request_metrics
+WHERE timestamp > now() - INTERVAL 1 HOUR
+  AND status = 'success'
+GROUP BY model_name, model_version;
+```
+
+Latency statistics include successful jobs only. Calculate error rate separately across all final rows so errors remain in the denominator:
+
+```sql
+SELECT model_name, model_version,
+       countIf(status = 'error') / count() AS error_rate
 FROM request_metrics
 WHERE timestamp > now() - INTERVAL 1 HOUR
 GROUP BY model_name, model_version;
 ```
+
+Each inference request that reaches a final outcome produces exactly one row. Retries that will continue produce no row until the job succeeds or reaches a terminal failure.
 
 ### 4. Promote or Rollback
 
@@ -116,9 +133,9 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 **Problem**: Official image now enforces default-user password.  
 **Fix**: Local dev uses `CLICKHOUSE_SKIP_USER_SETUP=1` (NOT production-safe).
 
-### 4. Fire-and-forget worked perfectly
+### 4. ClickHouse failures do not fail jobs
 
-**Observation**: During ClickHouse auth failure, job processing never broke. Only metric write silently failed with warning. This is the entire point of try/except wrapper.
+Metric insert failures are caught and logged. Phase 10 moves the synchronous insert off the event loop and backs off further attempts for 60 seconds after a failure.
 
 ---
 
@@ -138,8 +155,9 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 
 - [x] ClickHouse deployment + service in Kubernetes
 - [x] `request_metrics` table with model_name, model_version, worker_name
-- [x] doc-ocr worker jobs log best-effort metrics to ClickHouse when it is available
-- [ ] ASR worker metrics are not wired into its consumer (Phase 10)
+- [x] Both workers log one best-effort metric row per job's final outcome
+- [x] Retries that will continue do not write rows; terminal failures use the failing attempt's elapsed time
+- [x] ClickHouse host and port are configurable, with a 60-second per-worker back-off after insert failure
 - [ ] Prometheus instrumentation and `/metrics` endpoints are not implemented
 - [x] `canary_percent` field in models table
 - [x] Registry-driven traffic splitting implemented
@@ -165,16 +183,15 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 - Easier to automate (API call, not kubectl)
 - Works with any orchestrator, not K8s-specific
 
-**Why Fire-and-Forget Metrics?**
+**Why Best-Effort Metrics?**
 
 - Observability outage should never become functional outage
-- Wrapped in try/except, only log warnings
+- Inserts run off the event loop, are wrapped in try/except, and back off for 60 seconds after failure
 - Metrics are best-effort
 
 **Why Skip Prometheus/Grafana?**
 
 - Prometheus instrumentation and the Prometheus/Grafana services are not implemented.
-- ClickHouse metric writes are best-effort and currently called by doc-ocr only.
 - The Compose stack does not include ClickHouse.
 
 ---
@@ -193,9 +210,8 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 
 - `k8s/clickhouse/deployment.yaml` - ClickHouse Kubernetes deployment
 - `k8s/clickhouse/service.yaml` - ClickHouse service
-- `gateway/metrics.py` - ClickHouse metric logging
-- `workers/doc_ocr/metrics.py` - Worker metrics
-- `workers/asr/metrics.py` - Metrics helper exists but is not called by the ASR consumer
+- `workers/doc_ocr/metrics.py` - Worker metrics with configurable host and failure back-off
+- `workers/asr/metrics.py` - Worker metrics with configurable host and failure back-off
 - `gateway/main.py` - Includes `get_model_with_canary()`
 - `gateway/registry.py` - Added `canary_percent`, `list_versions()`
 - `gateway/schemas.py` - Updated Pydantic models
@@ -206,9 +222,9 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 
 **What's currently implemented:**
 
-- Best-effort doc-ocr ClickHouse writes when ClickHouse is available
+- Best-effort terminal-job ClickHouse writes from both workers when ClickHouse is available
 - Canary routing logic
-- Fire-and-forget safety
+- Failure back-off and off-event-loop metric inserts
 
 **What needs work:**
 
@@ -221,6 +237,6 @@ Both via `PATCH /v1/models/{id}`. Zero code changes.
 
 ## Postmortem Summary
 
-Canary routing is registry-driven. ClickHouse writes are best-effort and currently called by doc-ocr only; ClickHouse is not in Compose. Prometheus instrumentation and Prometheus/Grafana are not implemented.
+Canary routing is registry-driven. Both workers write one best-effort ClickHouse metric row for each completed job; the gateway does not write metrics, and unfinished jobs have no row. ClickHouse is Kubernetes-only, not in Compose. Prometheus instrumentation and Prometheus/Grafana are not implemented.
 
-**Interview talking point**: "Built registry-driven canary routing, so model-version traffic splits are controlled by registry data. The doc-ocr worker has best-effort ClickHouse metrics for request version, latency, and status; ClickHouse is not included in Docker Compose. Prometheus/Grafana and automated rollback are not implemented."
+**Interview talking point**: "Built registry-driven canary routing, so model-version traffic splits are controlled by registry data. Both workers write one best-effort ClickHouse metric row per completed job for version, latency, and final status; the gateway does not write metrics, and ClickHouse is not included in Docker Compose. Prometheus/Grafana and automated rollback are not implemented."
