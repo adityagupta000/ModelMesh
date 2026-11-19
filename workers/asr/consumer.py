@@ -5,6 +5,7 @@ import os
 import time
 from redis.asyncio import Redis
 from inference import transcribe, _load_model
+from metrics import log_metric
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -80,6 +81,16 @@ async def fail_permanently(redis, job_data, entry_id, group, error, elapsed_ms):
         maxlen=1000,
         approximate=True,
     )
+    await asyncio.to_thread(
+        log_metric,
+        job_id,
+        job_data.get("model_id", ""),
+        job_data.get("model_name", ""),
+        job_data.get("model_version", ""),
+        WORKER_NAME,
+        "error",
+        elapsed_ms,
+    )
     await redis.xack("inference_jobs", group, entry_id)
 
 
@@ -106,6 +117,16 @@ async def handle_failure(redis, job_data, entry_id, group, error, elapsed_ms):
             maxlen=1000,
             approximate=True,
         )
+        await asyncio.to_thread(
+            log_metric,
+            job_id,
+            job_data.get("model_id", ""),
+            job_data.get("model_name", ""),
+            job_data.get("model_version", ""),
+            WORKER_NAME,
+            "error",
+            elapsed_ms,
+        )
         await redis.xack("inference_jobs", group, entry_id)
 
 
@@ -116,6 +137,16 @@ async def process_entry(redis, group, entry_id, fields):
         return
     error, elapsed_ms = await handle_job(redis, job_data)
     if error is None:
+        await asyncio.to_thread(
+            log_metric,
+            job_data["job_id"],
+            job_data.get("model_id", ""),
+            job_data.get("model_name", ""),
+            job_data.get("model_version", ""),
+            WORKER_NAME,
+            "success",
+            elapsed_ms,
+        )
         await redis.xack("inference_jobs", group, entry_id)
     elif isinstance(error, PermanentError):
         await fail_permanently(redis, job_data, entry_id, group, error, elapsed_ms)
