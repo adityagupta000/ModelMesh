@@ -216,16 +216,16 @@ The WebSocket path reads `protocol` and `endpoint` from the registry, then calls
 
 **Implemented**:
 
-- Best-effort ClickHouse metric logging from the doc-ocr worker in Kubernetes
+- Best-effort final-outcome ClickHouse metrics from both workers; ClickHouse is Kubernetes-only and is not included in Compose
 - Canary routing logic (`canary_percent` field in registry)
 - Version pinning support (`?version=v1` bypasses canary)
+- Optional Phase 11 canary rollback guard: dry-run by default; starvation and synthetic-error demos verified; `--apply` only sets `canary_percent` to 0
 
 **Not Implemented / Not Available**:
 
 - Prometheus instrumentation and `/metrics` endpoints
 - Prometheus and Grafana deployment
-- ClickHouse service in Docker Compose; Compose workers log a warning when metric writes fail
-- ASR worker metric logging
+- ClickHouse service in Docker Compose; worker metric inserts back off after a failure
 
 ---
 
@@ -355,4 +355,5 @@ eval $(minikube docker-env)
 | [Phase 3](docs/Phase3-Streaming-gRPC-WebSockets.md) | WebSockets + gRPC streaming                                   |
 | [Phase 4](docs/Phase4-Kubernetes-Deployment.md)     | Kubernetes deployment on minikube                             |
 | [Phase 5](docs/Phase5-Observability-Canary.md)      | ClickHouse analytics + canary routing                         |
+| [Phase 11 (optional)](docs/Phase11_Canary_Rollback_Guard.md) | Tested canary rollback guard; dry-run by default, rollback only sets the percentage to 0 |
 
