@@ -1,28 +1,62 @@
 import logging
+import os
 import time
-from clickhouse_connect import get_client
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
-_ch_client = None
-
-
-def get_ch_client():
-    global _ch_client
-    if _ch_client is None:
-        _ch_client = get_client(host="clickhouse", port=8123)
-    return _ch_client
+_client = None
+_skip_until = 0.0
 
 
-def log_metric(request_id: str, model_id: str, model_name: str, model_version: str,
-                worker_name: str, status: str, latency_ms: int):
-    """Fire-and-forget metric write. Never let a ClickHouse failure break job processing."""
-    try:
-        client = get_ch_client()
-        client.insert(
-            "request_metrics",
-            [[request_id, model_id, model_name, model_version, worker_name, status, latency_ms]],
-            column_names=["request_id", "model_id", "model_name", "model_version", "worker_name", "status", "latency_ms"],
+def _get_client():
+    global _client
+    if _client is None:
+        import clickhouse_connect
+
+        _client = clickhouse_connect.get_client(
+            host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+            port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
         )
-    except Exception as e:
-        logger.warning(f"Failed to log metric to ClickHouse: {e}")
+    return _client
+
+
+def log_metric(
+    request_id: str,
+    model_id: str,
+    model_name: str,
+    model_version: str,
+    worker_name: str,
+    status: str,
+    latency_ms: int,
+):
+    """Write one metric row without surfacing ClickHouse failures to workers."""
+    global _client, _skip_until
+    now = time.monotonic()
+    if now < _skip_until:
+        return
+    try:
+        _get_client().insert(
+            "request_metrics",
+            [[
+                request_id,
+                model_id,
+                model_name,
+                model_version,
+                worker_name,
+                status,
+                int(latency_ms),
+            ]],
+            column_names=[
+                "request_id",
+                "model_id",
+                "model_name",
+                "model_version",
+                "worker_name",
+                "status",
+                "latency_ms",
+            ],
+        )
+    except Exception as exc:
+        _client = None
+        _skip_until = time.monotonic() + 60.0
+        log.warning("metric insert failed (skipping for 60s): %s", exc)
