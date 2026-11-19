@@ -52,7 +52,7 @@ def select_stable_and_canary(
     models: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     active = [model for model in models if model["status"] == "active"]
-    if len(active) < 2 or not any(model["canary_percent"] > 0 for model in active):
+    if len(active) < 2:
         return None
 
     stable = min(active, key=lambda model: _version_number(model["version"]))
@@ -148,20 +148,26 @@ def main(argv: list[str] | None = None) -> int:
             for name in sorted(grouped)
             if (pair := select_stable_and_canary(grouped[name])) is not None
         ]
+        query_pairs = [
+            pair for pair in model_pairs if pair[1]["canary_percent"] > 0
+        ]
         stats_by_model = (
             query_model_stats(
-                model_pairs,
+                query_pairs,
                 args.window_min,
                 os.getenv("CLICKHOUSE_HOST", "clickhouse"),
                 clickhouse_port,
             )
-            if model_pairs
+            if query_pairs
             else {}
         )
 
         output = []
         for stable_model, canary_model in model_pairs:
-            stable_stats, canary_stats = stats_by_model[canary_model["name"]]
+            if canary_model["canary_percent"] == 0:
+                stable_stats, canary_stats = Stats(0, 0.0), Stats(0, 0.0)
+            else:
+                stable_stats, canary_stats = stats_by_model[canary_model["name"]]
             decision, reason = decide(
                 stable_stats,
                 canary_stats,

@@ -48,3 +48,21 @@ def test_version_number_selection_orders_v10_after_v9():
 
     assert stable["id"] == "v9"
     assert canary["id"] == "v10"
+
+
+def test_zero_percent_canary_pair_remains_reportable_as_noop():
+    versions = [
+        {"id": "v1", "version": "v1", "status": "active", "canary_percent": 0},
+        {"id": "v2", "version": "v2", "status": "active", "canary_percent": 0},
+    ]
+
+    stable, canary = canary_guard.select_stable_and_canary(versions)
+
+    assert canary_guard.decide(
+        canary_guard.Stats(0, 0.0),
+        canary_guard.Stats(0, 0.0),
+        canary["canary_percent"],
+        canary_guard.Config(),
+    ) == ("noop", "canary already at 0")
+    assert stable["id"] == "v1"
+    assert canary["id"] == "v2"
