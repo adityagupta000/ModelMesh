@@ -20,6 +20,14 @@ spec:
           ports:
             - containerPort: 8123
             - containerPort: 9000
+          volumeMounts:
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
           resources:
             requests: { cpu: "250m", memory: "400Mi" }
             limits: { cpu: "500m", memory: "700Mi" }
+      volumes:
+        - name: init-sql
+          configMap:
+            name: clickhouse-init-sql
