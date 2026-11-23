@@ -1,0 +1,12 @@
+apiVersion: v1
+data:
+  init.sql: "-- RECONSTRUCTED from the insert columns and documented queries. Verify
+    with SHOW CREATE TABLE.\r\nCREATE TABLE IF NOT EXISTS request_metrics (\r\n    timestamp
+    \    DateTime DEFAULT now(),\r\n    request_id    String,\r\n    model_id      String,\r\n
+    \   model_name    String,\r\n    model_version String,\r\n    worker_name   String,\r\n
+    \   status        String,\r\n    latency_ms    UInt32\r\n) ENGINE = MergeTree\r\nORDER
+    BY (model_name, model_version, timestamp);\r\n"
+kind: ConfigMap
+metadata:
+  name: clickhouse-init-sql
+  namespace: modelmesh
