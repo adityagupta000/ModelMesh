@@ -22,6 +22,10 @@ spec:
               value: "redis://redis:6379"
             - name: WORKER_NAME
               value: "asr-worker"
+            - name: CLICKHOUSE_HOST
+              value: "clickhouse"
+            - name: CLICKHOUSE_PORT
+              value: "8123"
             - name: MAX_UPLOAD_BYTES
               value: "10485760"
             - name: RECLAIM_IDLE_MS
