@@ -1,5 +1,7 @@
 # Phase 6 completion report
 
+> **Historical phase result.** This report preserves Phase 6 verification at that time. The later documentation audit has since revised `docs/Prerequisites.md`; that supersedes the D7 note below. For current behavior, see the [README](../README.md) and [SETUP guide](../SETUP.md). The latest full-suite result is in the [Phase 11 report](Phase11_Completion_Report.md).
+
 ## Scope
 
 Phase 6 schema, documentation, cleanup, and baseline-verification work is complete.
@@ -19,6 +21,6 @@ Phase 6 schema, documentation, cleanup, and baseline-verification work is comple
 - `gateway/queue.py`, the dead gateway symbols, Kafka dormancy comments, export-script rename, Docker ignore rules, and git ignores were all completed.
 - ClickHouse DDL exists and is marked reconstructed because no live ClickHouse instance was available.
 
-## Open decision
+## Decision D7 (historical outcome)
 
-Decision D7 remains unchanged: no change was made to `docs/Prerequisites.md` or the public-repository interview-talking-point wording.
+At the end of Phase 6, D7 remained open; no change was made then to `docs/Prerequisites.md` or the public-repository interview-talking-point wording. A later documentation audit revised `docs/Prerequisites.md`; that later edit does not change the historical Phase 6 outcome.

@@ -18,19 +18,21 @@ The 75% score is 9 of 12 scoped outcomes: Kubernetes ClickHouse deployment, tabl
 - ClickHouse Kubernetes deployment + service
 - `request_metrics` table schema (columnar, MergeTree engine)
 - Best-effort metric logging from both workers
-- Exactly one metric row per completed job, on its final outcome; retries that continue do not create rows
+- One best-effort insert attempt per completed job, on its final outcome; a successful insert creates one row and retries that continue do not create rows
 - Metric writes run off the event loop; after an insert failure, each worker skips further attempts for 60 seconds and emits at most one warning per back-off window
 - Metrics include: request_id, model_id, model_name, model_version, worker_name, latency_ms, status
 - Table DDL: [`clickhouse/init.sql`](../clickhouse/init.sql) (reconstructed; verify against a live table)
 
-Every request that reaches a final outcome is logged exactly once by its worker. The gateway does not write metric rows. Jobs that never reach a final outcome, such as a queued job whose worker never completes it, produce no row. ClickHouse is deployed in Kubernetes only; Docker Compose has no ClickHouse service.
+The Kubernetes manifests deploy the ClickHouse server and Service and mount an init ConfigMap generated from `clickhouse/init.sql`, so `request_metrics` is created automatically on pod startup. Docker Compose worker metrics remain disabled unless `CLICKHOUSE_HOST` and optionally `CLICKHOUSE_PORT` are supplied from the shell. The deployment has no persistent volume, so stored metrics do not survive a pod restart or replacement.
+
+Each Redis worker job that reaches a final outcome causes one best-effort insert attempt when `CLICKHOUSE_HOST` is configured. A successful insert produces one row; a failed insert may leave no row. Direct WebSocket inference does not write these metric rows, and the gateway does not write metric rows. Jobs that never reach a final outcome, such as a queued job whose worker never completes it, produce no row. ClickHouse is deployed in Kubernetes only; Docker Compose has no ClickHouse service, and an unset host disables worker metric writes without attempting a connection. Configured clients use a 2-second connect timeout and a 5-second send/receive timeout; a failed write still triggers the existing 60-second per-worker back-off.
 
 ### Canary Routing Logic - COMPLETE
 
 - `canary_percent` column added to `models` table
 - `get_model_with_canary()` function in gateway
 - Registry-driven traffic splitting (no K8s selector tricks)
-- Version pinning support (`?version=v1` bypasses canary)
+- REST version pinning (`?version=v1` bypasses canary)
 - Numeric version comparison: with two or more active versions, the highest is the canary and the lowest is stable; versions in between receive no traffic
 - WebSocket inference has no canary routing
 - The API-key rate limiter uses a fixed 60-second window
@@ -48,13 +50,15 @@ There is no Prometheus client instrumentation or `/metrics` endpoint in the curr
 
 Prometheus instrumentation, Prometheus, and Grafana are not included in the current implementation.
 
-ClickHouse remains Kubernetes-only. Docker Compose has no ClickHouse service; when a worker cannot reach ClickHouse, inference continues and that worker backs off metric inserts for 60 seconds after a failed attempt.
+ClickHouse remains Kubernetes-only. Docker Compose has no ClickHouse service. With no `CLICKHOUSE_HOST`, metric writes are disabled; if a configured ClickHouse service is unreachable, inference continues and that worker backs off metric inserts for 60 seconds after a failed attempt.
 
 ---
 
 ## How Canary Works (Implemented)
 
 ### 1. Register v2 via API (not kubectl)
+
+This registers metadata only; deploy a worker that consumes the selected `worker_name`. REST jobs use `worker_name` and ignore `protocol` and `endpoint`. Those fields are used by direct WebSocket inference, which does not use this canary selector.
 
 ```bash
 curl -X POST http://gateway/v1/models \
@@ -73,12 +77,14 @@ v1 and v2 coexist as separate rows, same `name`, different `version`.
 
 ### 2. Traffic Splitting (Registry-Driven)
 
-Gateway's `get_model_with_canary()` function:
+Gateway's REST `get_model_with_canary()` function:
 
-- Client specifies version → Route to that version
+- Client specifies `?version=` → Route to that REST version
 - Client omits version → Roll random 1-100
   - ≤ canary_percent → Route to highest version (v2)
   - \> canary_percent → Route to lowest version (v1)
+
+The percentage is a probabilistic split over requests, not a guaranteed exact ratio for a small sample. With two or more active versions, the highest numeric version is the canary and the lowest is stable; intermediate versions receive no traffic. WebSocket requests do not use this selector.
 
 **Key insight**: This is simpler and more flexible than K8s replica-ratio tricks. Traffic split is a data change, not a deployment.
 
@@ -105,7 +111,7 @@ WHERE timestamp > now() - INTERVAL 1 HOUR
 GROUP BY model_name, model_version;
 ```
 
-Each inference request that reaches a final outcome produces exactly one row. Retries that will continue produce no row until the job succeeds or reaches a terminal failure.
+Each Redis worker job that reaches a final outcome triggers one best-effort insert attempt. Direct WebSocket inference is not included. Retries that will continue produce no row until the job succeeds or reaches a terminal failure.
 
 ### 4. Promote or Rollback
 
@@ -124,6 +130,8 @@ The guard uses two rollback rules:
 - **Error-rate delta:** after both versions meet the minimum sample count, rolls back only when the canary error rate exceeds stable by more than the configured margin. If both versions fail at similar rates, it holds.
 
 Defaults are a 10-minute sliding window, 30 minimum requests per version, and a 0.10 error-rate delta. Without `--apply`, the guard is a dry run and changes nothing. With `--apply`, it only sets the canary's `canary_percent` to 0; it does not disable or delete the canary.
+
+After enabling or raising a canary, wait at least one full guard window before running with `--apply`. Do not schedule `--apply` more often than the window. The guard uses a sliding look-back and has no timestamp for when the canary percentage changed, so a recently enabled healthy canary can initially appear starved.
 
 Limitations:
 
@@ -166,7 +174,7 @@ Metric insert failures are caught and logged. Phase 10 moves the synchronous ins
 
 ### Canary Split Test
 
-- 20 requests with no version → Split 10/10 between v1/v2 at 50% canary
+- In this run, 20 requests with no version split 10/10 between v1/v2 at 50% canary; this probabilistic split is not guaranteed for every 20-request sample
 - 5 requests with `?version=v1` → All landed on v1
 - ClickHouse query correctly separated metrics by `model_version`
 
@@ -178,9 +186,9 @@ Metric insert failures are caught and logged. Phase 10 moves the synchronous ins
 
 - [x] ClickHouse deployment + service in Kubernetes
 - [x] `request_metrics` table with model_name, model_version, worker_name
-- [x] Both workers log one best-effort metric row per job's final outcome
+- [x] Both workers make one best-effort insert attempt per Redis job's final outcome
 - [x] Retries that will continue do not write rows; terminal failures use the failing attempt's elapsed time
-- [x] ClickHouse host and port are configurable, with a 60-second per-worker back-off after insert failure
+- [x] ClickHouse host and port are configurable; an unset host disables metrics, configured clients use bounded timeouts, and failures trigger a 60-second per-worker back-off
 - [ ] Prometheus instrumentation and `/metrics` endpoints are not implemented
 - [x] `canary_percent` field in models table
 - [x] Registry-driven traffic splitting implemented
@@ -260,6 +268,6 @@ Metric insert failures are caught and logged. Phase 10 moves the synchronous ins
 
 ## Postmortem Summary
 
-Canary routing is registry-driven. Both workers write one best-effort ClickHouse metric row for each completed job; the gateway does not write metrics, and unfinished jobs have no row. ClickHouse is Kubernetes-only, not in Compose. Prometheus instrumentation and Prometheus/Grafana are not implemented.
+Canary routing is registry-driven. Both workers make one best-effort ClickHouse insert attempt for each completed Redis job; the gateway and direct WebSocket path do not write metrics, and unfinished jobs have no row. ClickHouse is Kubernetes-only, not in Compose. Prometheus instrumentation and Prometheus/Grafana are not implemented.
 
-**Interview talking point**: "Built registry-driven canary routing, so model-version traffic splits are controlled by registry data. Both workers write one best-effort ClickHouse metric row per completed job for version, latency, and final status; the gateway does not write metrics, and ClickHouse is not included in Docker Compose. An optional standalone guard detects canary starvation or error-rate regressions and can set the percentage to zero; Prometheus/Grafana are not implemented."
+**Interview talking point**: "Built registry-driven canary routing, so model-version traffic splits are controlled by registry data. Both workers make a best-effort ClickHouse insert attempt for each completed Redis job, recording version, latency, and final status when ClickHouse is available. The gateway and direct WebSocket path do not write metrics, and ClickHouse is not included in Docker Compose. An optional standalone guard detects canary starvation or error-rate regressions and can set the percentage to zero; Prometheus/Grafana are not implemented."

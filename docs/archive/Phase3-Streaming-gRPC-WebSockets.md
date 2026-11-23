@@ -1,4 +1,4 @@
-# Phase 3 — Streaming (WebSockets + gRPC)
+# Phase 3 — WebSocket Inference + gRPC
 
 ## Implementation Status: COMPLETE ✓
 
@@ -10,18 +10,18 @@
 
 ## What Was Implemented
 
-### Part A: WebSockets (Client-Facing Streaming) - COMPLETE
+### Part A: WebSocket Inference (Client-Facing) - COMPLETE
 
 - WebSocket endpoint `/v1/ws/infer/{model_name}`
 - API key auth via query parameter (browser WebSocket limitation)
-- Real-time result streaming
+- Whole-file inference responses over WebSocket; the current client flow is not incremental audio upload
 - Test clients (Python CLI + browser HTML)
 
 ### Part B: gRPC (WebSocket Inference Communication) - COMPLETE
 
 - Protobuf contract (`inference.proto`)
 - Unary RPC (`Predict`) for direct inference calls
-- Bidirectional streaming RPC (`PredictStream`) for ASR
+- Bidirectional ASR RPC (`PredictStream`); the current gateway sends the uploaded file as a single final chunk
 - gRPC servers in all workers
 - gRPC client in gateway
 - Protocol selection via registry on the WebSocket inference path (HTTP ↔ gRPC)
@@ -40,12 +40,12 @@ Client → Gateway (REST) → Redis Streams → Worker consumer → Result in Re
 
 ## Definition of Done
 
-- [x] WebSocket endpoint streaming partial results
+- [x] WebSocket endpoint returns inference results
 - [x] Test clients (Python + HTML) working
 - [x] `.proto` contract defined
 - [x] WebSocket registry rows can select HTTP or gRPC without gateway code changes
 - [x] Gateway-worker gRPC calls on the WebSocket path
-- [x] Bidirectional streaming gRPC for ASR
+- [x] Bidirectional streaming gRPC for ASR; the current gateway path sends one final chunk, not token-level streaming
 - [x] Before/after latency comparison recorded
 - [x] Can explain whether gRPC helped and why
 
@@ -55,12 +55,11 @@ Client → Gateway (REST) → Redis Streams → Worker consumer → Result in Re
 
 **Why WebSockets?**
 
-- Eliminates polling from Phase 2
-- Server pushes updates as they arrive
-- Bi-directional streaming
-- Lower latency for real-time use cases
+- Avoids REST job-status polling for this direct inference path
+- Uses a full-duplex connection, but the current API sends one whole file and returns one final result
+- Does not provide incremental upload, transcription tokens, or progress updates
 
-**Trade-off**: More complex client lifecycle management
+**Trade-off**: More complex client lifecycle management. The current gateway receives the full file before forwarding it; it does not provide incremental client-to-worker streaming.
 
 **Why gRPC?**
 
@@ -81,7 +80,7 @@ Zero gateway code changes required.
 
 The REST `/v1/infer/{model_name}` path enqueues to Redis Streams, and worker consumers call their inference functions directly. It does not read the model protocol field or route that request through gRPC.
 
-**Streaming caveat**: Whisper doesn't support token-level streaming. Implementation is chunk-level (send full audio, get result when ready, mark `is_final: true`). Honest streaming behavior, but not token-by-token. Infrastructure ready for future models with true incremental output.
+**Streaming caveat**: Whisper doesn't support token-level streaming. The ASR gRPC RPC can yield outputs for chunks, but the current gateway sends a whole uploaded file as one chunk with `is_final: true`. This is not incremental client streaming or token-by-token transcription.
 
 ---
 
@@ -108,7 +107,7 @@ Workers start THREE separate processes in one container:
 2. gRPC server (Phase 3, port 50051)
 3. Redis consumer (Phase 2, foreground)
 
-Achieved via entrypoint script supervision of HTTP and gRPC servers and the Redis consumer. These processes do not share in-memory model instances; each process can load its own model. Final Phase 9 Compose measurements: ASR 1.084 GiB and doc-ocr 1.185 GiB. Kubernetes figures were not available without a cluster.
+Achieved via entrypoint script supervision of HTTP and gRPC servers and the Redis consumer. These processes do not share in-memory model instances; each process can load its own model. Final Phase 9 Compose measurements: ASR 1.084 GiB and doc-ocr 1.185 GiB. A later local Minikube OCR sample measured a 2,503 MiB container peak; the Kubernetes doc-ocr limit is 3 GiB. This was a small synthetic sample, not large-document stress testing.
 
 ---
 
@@ -138,7 +137,7 @@ No code changes, no restarts. Just data.
 
 ## Performance Notes
 
-Latency comparison (HTTP vs gRPC) measured via Artillery load test. Results depend on payload size and network overhead. For containerized networking with small payloads, difference may be minimal. True value: streaming capability + type safety, not raw speed for this workload.
+Two different comparisons are recorded in [`baseline-measurements.md`](baseline-measurements.md). The Artillery run measured REST job-acceptance latency and could not compare HTTP with gRPC because REST jobs do not use protocol dispatch. A separate custom script timed 20 sequential whole-file WebSocket round trips per protocol and model. Those results are historical measurements, not a performance guarantee; the WebSocket client flow is not incremental streaming.
 
 ---
 

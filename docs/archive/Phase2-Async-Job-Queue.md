@@ -58,10 +58,10 @@ Client polls /v1/jobs/{job_id} for result
 
 - Gateway never blocks on slow inference
 - Workers scale independently
-- Automatic retries on failures
+- Retries for transient failures; permanent input errors fail without retries
 - Better fault tolerance
 
-**Trade-off**: Clients must poll for results (fixed in Phase 3 with WebSockets)
+**Trade-off**: REST clients must poll for queued-job results. Phase 3 added a separate direct-inference WebSocket path; it does not turn the REST queue into a streaming job API.
 
 **Stale model behavior**: Jobs enqueued before model disabled will still process. Disabling stops NEW jobs, not in-flight ones.
 
@@ -86,4 +86,4 @@ Client polls /v1/jobs/{job_id} for result
 
 ## Next Phase
 
-Phase 3: WebSockets + gRPC (eliminate polling, high-performance internal comm)
+Phase 3: WebSocket direct inference + gRPC (a separate whole-file request/result path; transport performance depends on the workload)

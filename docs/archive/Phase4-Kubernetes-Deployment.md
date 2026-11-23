@@ -71,7 +71,7 @@ k8s/
 
 ## Environment Constraints
 
-**Minikube setup**: Used `--cpus=2 --memory=4096` instead of planned 8192MB due to WSL2 host RAM limits (7.6GB total). Required stopping Docker Compose stack first to free memory.
+**Minikube setup**: The live follow-up used `--cpus=2 --memory=4096` and stopped Compose first to free host memory. Despite that startup flag, Kubernetes reported 7.58 GiB allocatable, so the run does not establish a hard 4 GiB node-memory limit. The OCR sample, memory peak, and limits are recorded in the [Phase 9 completion report](Phase9_Completion_Report.md).
 
 **Image building**: Must run `eval $(minikube docker-env)` before building images in each new terminal session, otherwise images build to host Docker daemon and pods fail to find them.
 
@@ -96,7 +96,15 @@ kubectl apply -f k8s/secrets.yaml
 kubectl apply -f k8s/redis/
 kubectl apply -f k8s/postgres/
 kubectl apply -f k8s/gateway/
+kubectl apply -f k8s/clickhouse/
+kubectl wait --for=condition=available deployment/clickhouse -n modelmesh --timeout=180s
 kubectl apply -f k8s/workers/
+```
+
+The ClickHouse deployment mounts `k8s/clickhouse/configmap.yaml` at `/docker-entrypoint-initdb.d`, so it creates `request_metrics` automatically at startup. The manual command below is a fallback if automatic initialization needs to be rechecked:
+
+```bash
+kubectl exec -i -n modelmesh deployment/clickhouse -- clickhouse-client --multiquery < clickhouse/init.sql
 
 # 4. Check status
 kubectl get pods -n modelmesh
@@ -181,10 +189,10 @@ Failed probes trigger Kubernetes pod restarts.
 
 **Postgres init**: Originally planned to seed schema at container startup. Implemented via ConfigMap mounting `init.sql` into `/docker-entrypoint-initdb.d/`.
 
-**gRPC ports**: Exposed via Services:
+**gRPC ports**: Both Kubernetes worker Services expose gRPC on port 50051. Docker Compose maps the ASR container's internal 50051 to host port 50052:
 
 - doc-ocr-worker: 50051
-- asr-worker: 50052 (mapped from internal 50051 to avoid conflict)
+- asr-worker: 50051 (Compose host mapping: 50052)
 
 **Protobuf compilation**: Stubs generated at container startup via entrypoint script, not at build time. Enables iterative development.
 
@@ -199,11 +207,11 @@ Not implemented in Phase 4, but would be needed for production:
 - Horizontal Pod Autoscaler (HPA)
 - NetworkPolicy for pod-to-pod rules
 - External secret management
-- Monitoring stack (Prometheus + Grafana) → Phase 5
+- Monitoring stack (Prometheus + Grafana) remains unimplemented; Phase 5 added ClickHouse metrics only
 - CI/CD pipeline (ArgoCD/FluxCD)
 
 ---
 
 ## Next Phase
 
-Phase 5: Observability + Canary Deployment (ClickHouse, Prometheus, Grafana, canary rollout)
+Phase 5 followed with ClickHouse metrics and canary routing; Prometheus/Grafana remain unimplemented. ClickHouse table DDL is mounted and applied automatically at pod startup, with a manual fallback described in [SETUP.md](../SETUP.md#kubernetes-minikube).

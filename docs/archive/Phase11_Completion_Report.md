@@ -1,8 +1,10 @@
 # Phase 11 completion report
 
+> **Historical merged result.** Phase 11 was merged into `dev` by commit `d6fd970`; the local feature branch was removed after the merge. The `phase-11-complete` tag remains. The full suite at that point reported 75 passed, 6 warnings. Subsequent review follow-up verification is recorded below.
+
 ## Branch / last commit / tag
 
-- Branch: `phase-11-canary-guard`
+- Original branch: `phase-11-canary-guard` (merged into `dev`; local branch removed)
 - Last commit: the completion-report commit
 - Tag: `phase-11-complete`
 - Implementation commits: `972d7de`, `c075da6`, `b19fe28`, `b85545d`
@@ -73,3 +75,9 @@ Cleanup set v2's canary percentage to 0, disabled the demo v2 model, and deleted
 ## Open questions
 
 - None. The optional Kubernetes CronJob was not requested.
+
+## Review follow-up verification
+
+The canary operating guidance now requires waiting one full guard window after enabling or increasing a canary before using `--apply`; the guard still has no canary-change timestamp and this warm-up rule is documentation, not a code-level timer. The WebSocket client now exits nonzero on server errors and timeouts and reports success only after a final result. Uvicorn access/error logs redact API-key query parameters. Additional focused coverage protects API-key rate-limit bounds, model/job privacy, and readiness error redaction.
+
+The latest recorded full suite reports `102 passed, 8 warnings`. This was automated local verification, not a new live canary demo. Subsequent Minikube pod, OCR, and recovery checks are recorded in the [Phase 9 completion report](Phase9_Completion_Report.md).

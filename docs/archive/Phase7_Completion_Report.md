@@ -1,5 +1,7 @@
 # Phase 7 completion report
 
+> **Historical phase result.** The 20-pass/1-xfail count below was the Phase 7 result before Phase 8. The latest recorded review-follow-up full-suite result is 102 passed, 8 warnings; see the [Phase 11 completion report](Phase11_Completion_Report.md).
+
 ## Scope
 
 Phase 7 test-harness, worker-test isolation, Compose test ports, dependency, mutation, and documentation work is complete.
@@ -15,7 +17,7 @@ Phase 7 test-harness, worker-test isolation, Compose test ports, dependency, mut
 - Obsolete `_key_dep`, `_admin_dep`, and `make_verify` names are absent.
 - The test harness uses the application's database and Redis singletons, Redis DB 1, unique emails, and shared-state cleanup.
 - Worker tests stub EasyOCR/Whisper, keep real NumPy and OpenCV, and load modules by file path.
-- Test dependencies preserve NumPy 2.4.4 and OpenCV headless 5.0.0.93.
+- At Phase 7, test dependencies used NumPy 2.4.4 and OpenCV headless 5.0.0.93. They were later aligned with the worker images at NumPy 1.26.4 and OpenCV headless 4.10.0.84 (see the [Phase 9 completion report](Phase9_Completion_Report.md)).
 - `docker-compose.test.yml`, `SETUP.md`, and `RUNNING.md` document the scratch database and test-only host ports.
 
 ## Smoke regression gate

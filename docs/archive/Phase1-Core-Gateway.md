@@ -37,9 +37,9 @@ Client → Gateway (FastAPI) → Worker (HTTP)
 - [x] `docker compose up` brings up all services
 - [x] `/v1/infer/{model_name}` routes via registry
 - [x] All registry CRUD endpoints work
-- [x] Adding a third model requires zero code changes for HTTP content-type routing
+- [x] The gateway has no model-name-specific HTTP routing branches; each model still requires a deployed worker that supports its input and inference type
 - [x] Error handling (404 unknown, 503 disabled, 401 auth, 429 rate limit)
-- [ ] pytest suite passes (see the Phase 0 baseline; test repairs are in Phase 7)
+- [x] The pytest suite passes after the Phase 7 test-harness repairs; the latest recorded review-follow-up run reported 102 passed, 8 warnings (see the [Phase 11 completion report](Phase11_Completion_Report.md))
 
 ---
 

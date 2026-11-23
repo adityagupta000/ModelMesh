@@ -1,5 +1,7 @@
 # Phase 8 completion report
 
+> **Historical phase result.** The counts and smoke measurements below are from Phase 8 and were superseded by later phases. The latest recorded review-follow-up full-suite result is 102 passed, 8 warnings; see the [Phase 11 completion report](Phase11_Completion_Report.md).
+
 ## Scope
 
 Phase 8 gateway validation, auth, routing, rate limiting, canary, readiness, secret hygiene, and documentation work is complete.
@@ -19,7 +21,7 @@ Phase 8 gateway validation, auth, routing, rate limiting, canary, readiness, sec
 - `/ready` returns 503 for Redis failure and 200 when Redis and Postgres are available.
 - The JWT placeholder secret produces a startup warning instead of preventing local startup.
 - Kubernetes PostgreSQL password now comes from `db-secret/postgres-password`.
-- All 16 Kubernetes YAML files parsed successfully locally; live cluster rendering was unavailable because no cluster is configured.
+- At Phase 8, all 16 Kubernetes YAML files parsed locally; live cluster rendering was unavailable at that time. A later Minikube follow-up is recorded in the [Phase 9 completion report](Phase9_Completion_Report.md).
 - Grep found no hardcoded `"ocr" in` or `model_name == "asr"` branches and no revoked-key reimplementation in the WebSocket handler.
 
 ## Live smoke evidence
