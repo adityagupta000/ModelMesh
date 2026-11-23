@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 import random
@@ -35,6 +36,29 @@ from schemas import (
 
 app = FastAPI(title="ModelMesh Gateway", version="1.0.0")
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "10485760"))
+logger = logging.getLogger(__name__)
+
+
+class _ApiKeyAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if record.name.startswith("uvicorn.") and isinstance(args, tuple):
+            record.args = tuple(
+                re.sub(r"([?&]api_key=)[^&\s]+", r"\1[REDACTED]", value)
+                if isinstance(value, str)
+                else value
+                for value in args
+            )
+        return True
+
+
+for _logger_name in ("uvicorn.access", "uvicorn.error"):
+    _access_logger = logging.getLogger(_logger_name)
+    if not any(
+        isinstance(f, _ApiKeyAccessLogFilter) for f in _access_logger.filters
+    ):
+        _access_logger.addFilter(_ApiKeyAccessLogFilter())
+
 
 @app.on_event("startup")
 async def startup():
@@ -164,7 +188,7 @@ async def infer(
     if len(payload_bytes) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "Upload exceeds maximum allowed size")
 
-    job_id = await enqueue_job(redis, model, payload_bytes, key.id)
+    job_id = await enqueue_job(redis, model, payload_bytes, key.id, key.user_id)
 
     return {
         "job_id": job_id,
@@ -176,7 +200,7 @@ async def infer(
 
 @app.get("/v1/jobs/{job_id}", tags=["inference"])
 async def get_job_status(job_id: str, key: ApiKeyRecord = Depends(verify_api_key)):
-    result = await _get_job_status(redis, job_id)
+    result = await _get_job_status(redis, job_id, key.user_id)
     if not result:
         raise HTTPException(404, "Job not found or expired")
     return result
@@ -184,10 +208,18 @@ async def get_job_status(job_id: str, key: ApiKeyRecord = Depends(verify_api_key
 
 # ── model registry endpoints ──────────────────────────────────────────────────
 
+def _public_model_dict(model):
+    return {
+        key: value
+        for key, value in vars(model).items()
+        if key not in {"endpoint", "worker_name"}
+    }
+
+
 @app.get("/v1/models", tags=["registry"])
 async def list_models_endpoint():
     models = await registry.list_models(database)
-    return [vars(m) for m in models]
+    return [_public_model_dict(model) for model in models]
 
 
 @app.get("/v1/models/{name}", tags=["registry"])
@@ -195,7 +227,7 @@ async def get_model_endpoint(name: str, version: str = "v1"):
     model = await registry.get_model(database, name, version)
     if not model:
         raise HTTPException(404, "Unknown model")
-    return vars(model)
+    return _public_model_dict(model)
 
 
 @app.post("/v1/models", tags=["registry"])
@@ -245,12 +277,14 @@ async def ready():
     try:
         await database.fetch_one("SELECT 1")
     except Exception as exc:
-        raise HTTPException(503, f"Not ready: Postgres unavailable: {exc}")
+        logger.warning("Readiness check failed: Postgres unavailable: %s", exc)
+        raise HTTPException(503, "Not ready: Postgres unavailable") from exc
     try:
         await redis.ping()
         return {"status": "ready"}
     except Exception as exc:
-        raise HTTPException(503, f"Not ready: Redis unavailable: {exc}")
+        logger.warning("Readiness check failed: Redis unavailable: %s", exc)
+        raise HTTPException(503, "Not ready: Redis unavailable") from exc
 
 
 # ── WebSocket streaming endpoint ─────────────────────────────────────────────
@@ -336,6 +370,9 @@ async def ws_infer(websocket: WebSocket, model_name: str):
         else:
             # Covers: http protocol, AND grpc protocol without streaming support (e.g. doc-ocr)
             data = await websocket.receive_bytes()
+            if len(data) > MAX_UPLOAD_BYTES:
+                await websocket.close(code=1009)
+                return
             result = await route_request(model.endpoint, model.protocol, data, model_name=model.name)
             await websocket.send_json({"result": result, "is_final": True})
 
