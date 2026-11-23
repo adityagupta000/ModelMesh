@@ -14,8 +14,10 @@ def _get_client():
         import clickhouse_connect
 
         _client = clickhouse_connect.get_client(
-            host=os.getenv("CLICKHOUSE_HOST", "clickhouse"),
+            host=os.environ["CLICKHOUSE_HOST"],
             port=int(os.getenv("CLICKHOUSE_PORT", "8123")),
+            connect_timeout=2,
+            send_receive_timeout=5,
         )
     return _client
 
@@ -31,6 +33,8 @@ def log_metric(
 ):
     """Write one metric row without surfacing ClickHouse failures to workers."""
     global _client, _skip_until
+    if not os.getenv("CLICKHOUSE_HOST"):
+        return
     now = time.monotonic()
     if now < _skip_until:
         return
