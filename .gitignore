@@ -91,3 +91,5 @@ Thumbs.db
 #Environment files
 modelmesh-env
 export_code.py
+
+verification/
