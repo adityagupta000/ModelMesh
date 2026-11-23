@@ -12,5 +12,5 @@ python-multipart==0.0.9
 Pillow==10.3.0
 grpcio==1.62.0
 grpcio-tools==1.62.0
-numpy==2.4.4
-opencv-python-headless==5.0.0.93
+numpy==1.26.4
+opencv-python-headless==4.10.0.84

@@ -128,3 +128,19 @@ async def test_rate_limit_enforced(client, db, regular_user):
         files={"file": ("x.jpg", b"\xff\xd8\xff", "image/jpeg")},
     )
     assert resp.status_code == 429
+
+
+@pytest.mark.parametrize("rate_limit", [0, -1, 1001])
+async def test_api_key_rate_limit_must_be_between_one_and_one_thousand(
+    client, regular_user, rate_limit
+):
+    import auth as _auth
+
+    token = _auth.create_access_token(regular_user["id"])
+    response = await client.post(
+        "/v1/auth/api-keys",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"rate_limit_per_min": rate_limit},
+    )
+
+    assert response.status_code == 422

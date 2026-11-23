@@ -42,7 +42,7 @@ async def test_streaming(api_key: str, model_name: str, audio_file: str):
 
                 if "error" in result:
                     print(f"ERROR: {result['error']}")
-                    break
+                    return 1
 
                 if "partial" in result:
                     print(f"[Partial] {result['partial']}")
@@ -57,10 +57,15 @@ async def test_streaming(api_key: str, model_name: str, audio_file: str):
 
             except asyncio.TimeoutError:
                 print("Timeout waiting for response")
-                break
+                return 1
 
         print("-" * 60)
+        if not result.get("is_final"):
+            print("ERROR: stream ended without a final result")
+            return 1
+        print("FINAL_RESULT=yes")
         print("Stream complete")
+        return 0
 
 
 if __name__ == "__main__":
@@ -74,4 +79,4 @@ if __name__ == "__main__":
     model_name = sys.argv[2]
     audio_file = sys.argv[3]
 
-    asyncio.run(test_streaming(api_key, model_name, audio_file))
+    sys.exit(asyncio.run(test_streaming(api_key, model_name, audio_file)))

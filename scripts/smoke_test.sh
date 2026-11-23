@@ -33,11 +33,21 @@ info_check() {
 }
 
 find_python() {
-    local candidates=(
+    local candidates=()
+    if [[ -n "${MODEL_MESH_PYTHON:-}" ]]; then
+        candidates+=("$MODEL_MESH_PYTHON")
+    fi
+    if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        candidates+=("$VIRTUAL_ENV/bin/python")
+    fi
+    candidates+=(
+        "$HOME/.venvs/modelmesh/bin/python"
         "$PWD/.venv/bin/python"
         "$PWD/modelmesh-env/bin/python"
-        "$HOME/modelmesh/modelmesh-env/bin/python"
     )
+    if command -v python3 >/dev/null 2>&1; then
+        candidates+=("$(command -v python3)")
+    fi
     local candidate
     for candidate in "${candidates[@]}"; do
         if [[ -x "$candidate" ]] && "$candidate" -c 'import websockets' >/dev/null 2>&1; then
@@ -142,8 +152,7 @@ if [[ -n "$PYTHON_BIN" ]]; then
     "$PYTHON_BIN" test_ws_client.py "$API_KEY" asr fixtures/sample_audio.wav >"$TMP_DIR/ws-asr.raw" 2>&1
     ws_asr_rc=$?
     sed -E "s/$API_KEY/[REDACTED]/g" "$TMP_DIR/ws-asr.raw" >"$TMP_DIR/ws-asr.out"
-    sed -E "s/$API_KEY/[REDACTED]/g" "$TMP_DIR/ws-asr.out" >/dev/null
-    if [[ $ws_asr_rc -eq 0 ]]; then
+    if [[ $ws_asr_rc -eq 0 ]] && grep -q '^FINAL_RESULT=yes$' "$TMP_DIR/ws-asr.out"; then
         pass_check ws-asr "exit=0 final_result=yes"
     else
         fail_check ws-asr "exit=$ws_asr_rc output=$(grep -v 'api_key=' "$TMP_DIR/ws-asr.out" | tr '\n' ' ' | cut -c1-160)"
@@ -152,8 +161,7 @@ if [[ -n "$PYTHON_BIN" ]]; then
     "$PYTHON_BIN" test_ws_client.py "$API_KEY" doc-ocr fixtures/sample_document.jpg >"$TMP_DIR/ws-doc.raw" 2>&1
     ws_doc_rc=$?
     sed -E "s/$API_KEY/[REDACTED]/g" "$TMP_DIR/ws-doc.raw" >"$TMP_DIR/ws-doc.out"
-    sed -E "s/$API_KEY/[REDACTED]/g" "$TMP_DIR/ws-doc.out" >/dev/null
-    if [[ $ws_doc_rc -eq 0 ]]; then
+    if [[ $ws_doc_rc -eq 0 ]] && grep -q '^FINAL_RESULT=yes$' "$TMP_DIR/ws-doc.out"; then
         pass_check ws-doc-ocr "exit=0 final_result=yes"
     else
         fail_check ws-doc-ocr "exit=$ws_doc_rc output=$(grep -v 'api_key=' "$TMP_DIR/ws-doc.out" | tr '\n' ' ' | cut -c1-160)"

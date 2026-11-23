@@ -1,3 +1,6 @@
+import logging
+from unittest.mock import AsyncMock
+
 import pytest
 
 import main
@@ -168,17 +171,71 @@ async def test_disabled_model_name_returns_503(monkeypatch, db):
 
 async def test_ready_returns_503_when_redis_is_down(monkeypatch, client):
     async def ping_down():
-        raise RuntimeError("redis unavailable")
+        raise RuntimeError("redis unavailable at internal-host")
 
     monkeypatch.setattr(main.redis, "ping", ping_down)
     resp = await client.get("/ready")
     assert resp.status_code == 503
     assert "redis" in resp.json()["detail"].lower()
+    assert "internal-host" not in resp.json()["detail"]
+
+
+async def test_ready_does_not_expose_postgres_exception(monkeypatch, client):
+    async def database_down(query):
+        raise RuntimeError("connection password=private")
+
+    monkeypatch.setattr(main.database, "fetch_one", database_down)
+    resp = await client.get("/ready")
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Not ready: Postgres unavailable"
+    assert "private" not in resp.json()["detail"]
 
 
 async def test_ready_returns_200_when_services_are_up(client):
     resp = await client.get("/ready")
     assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("logger_name", "message", "args"),
+    [
+        (
+            "uvicorn.access",
+            '%s - "%s %s HTTP/%s" %d',
+            (
+                "127.0.0.1:1234",
+                "GET",
+                "/v1/infer/asr?api_key=secret-key&version=v1",
+                "1.1",
+                200,
+            ),
+        ),
+        (
+            "uvicorn.error",
+            '%s - "WebSocket %s" [accepted]',
+            (
+                "127.0.0.1:1234",
+                "/v1/ws/infer/asr?api_key=secret-key&version=v1",
+            ),
+        ),
+    ],
+)
+async def test_uvicorn_logs_redact_query_api_keys(logger_name, message, args):
+    record = logging.LogRecord(
+        logger_name,
+        logging.INFO,
+        __file__,
+        1,
+        message,
+        args,
+        None,
+    )
+    access_filter = main._ApiKeyAccessLogFilter()
+
+    assert access_filter.filter(record)
+    assert "secret-key" not in record.getMessage()
+    assert "api_key=[REDACTED]" in record.getMessage()
 
 
 async def test_upload_over_limit_returns_413(client, regular_key):
@@ -199,7 +256,7 @@ async def test_upload_at_limit_is_accepted(monkeypatch, client, regular_key):
     monkeypatch.setattr(
         main,
         "enqueue_job",
-        lambda redis, model, payload, api_key_id: _async_result("job-limit"),
+        lambda redis, model, payload, api_key_id, owner_id: _async_result("job-limit"),
     )
 
     resp = await client.post(
@@ -208,6 +265,83 @@ async def test_upload_at_limit_is_accepted(monkeypatch, client, regular_key):
         files={"file": ("limit.jpg", b"x" * main.MAX_UPLOAD_BYTES, "image/jpeg")},
     )
     assert resp.status_code == 200
+
+
+async def test_websocket_http_path_closes_on_oversized_payload(monkeypatch):
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 16)
+    monkeypatch.setattr(
+        main,
+        "lookup_key",
+        AsyncMock(
+            return_value=main.ApiKeyRecord(
+                id="key-id",
+                user_id="owner-id",
+                rate_limit_per_min=100,
+            )
+        ),
+    )
+    monkeypatch.setattr(main, "check_rate_limit", AsyncMock())
+    monkeypatch.setattr(
+        main.registry, "get_model", AsyncMock(return_value=_model("v1"))
+    )
+    route_request = AsyncMock()
+    monkeypatch.setattr(main, "route_request", route_request)
+
+    class WebSocketStub:
+        query_params = {"api_key": "test-key", "version": "v1"}
+
+        def __init__(self):
+            self.close_code = None
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, message):
+            pass
+
+        async def receive_bytes(self):
+            return b"x" * 17
+
+        async def close(self, code):
+            self.close_code = code
+
+    websocket = WebSocketStub()
+    await main.ws_infer(websocket, "custom")
+
+    assert websocket.close_code == 1009
+    route_request.assert_not_awaited()
+
+
+async def test_public_model_reads_hide_internal_worker_routing(client):
+    list_response = await client.get("/v1/models")
+    detail_response = await client.get("/v1/models/doc-ocr")
+
+    assert list_response.status_code == 200
+    assert detail_response.status_code == 200
+    assert all(
+        "endpoint" not in model and "worker_name" not in model
+        for model in list_response.json()
+    )
+    assert "endpoint" not in detail_response.json()
+    assert "worker_name" not in detail_response.json()
+
+
+async def test_job_status_lookup_uses_authenticated_user(
+    monkeypatch, client, regular_key, regular_user
+):
+    requested_owners = []
+
+    async def status_lookup(redis, job_id, owner_id):
+        requested_owners.append(owner_id)
+        return {"job_id": job_id, "status": "success"}
+
+    monkeypatch.setattr(main, "_get_job_status", status_lookup)
+    response = await client.get(
+        "/v1/jobs/job-1", headers=auth_header(regular_key)
+    )
+
+    assert response.status_code == 200
+    assert requested_owners == [regular_user["id"]]
 
 
 async def _async_result(value):

@@ -1,3 +1,5 @@
+import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -257,3 +259,134 @@ async def test_transient_retry_then_success_logs_only_success(
         "success",
     )
     assert metric.call_args.args[6] >= 0
+
+
+@pytest.mark.asyncio(scope="session")
+async def test_invalid_whisper_audio_fails_without_retry(monkeypatch):
+    mock_model = MagicMock()
+    mock_model.transcribe.side_effect = RuntimeError(
+        "Failed to load audio: invalid input"
+    )
+    inference = load_module_from_path(
+        "asr_inference_for_consumer",
+        "workers/asr/inference.py",
+        stubs={"whisper": SimpleNamespace(load_model=MagicMock(return_value=mock_model))},
+        monkeypatch=monkeypatch,
+    )
+    metric = MagicMock()
+    module = load_module_from_path(
+        "asr_consumer_invalid_audio",
+        "workers/asr/consumer.py",
+        stubs={
+            "inference": inference,
+            "metrics": SimpleNamespace(log_metric=metric),
+        },
+        monkeypatch=monkeypatch,
+    )
+    redis = AsyncMock()
+    redis.get.return_value = b"not a wav file"
+    fields = {
+        b"job_id": b"invalid-audio-job",
+        b"worker_name": module.WORKER_NAME.encode(),
+        b"model_id": b"model-1",
+        b"model_name": b"asr",
+        b"model_version": b"v1",
+    }
+    sleep = AsyncMock(side_effect=AssertionError("permanent input must not retry"))
+    monkeypatch.setattr(module.asyncio, "sleep", sleep)
+
+    await module.process_entry(redis, "group", "1-0", fields)
+
+    sleep.assert_not_awaited()
+    assert redis.xadd.await_args.args[0] == "inference_jobs_dlq"
+    assert redis.xadd.await_args.args[1]["reason"] == "Invalid audio data"
+    assert redis.xack.await_count == 1
+    assert "Invalid audio data" in redis.setex.await_args.args[2]
+    metric.assert_called_once()
+
+
+@pytest.mark.asyncio(scope="session")
+async def test_consumer_maintenance_runs_by_elapsed_time(consumer_module, monkeypatch):
+    module, _ = consumer_module
+    redis = AsyncMock()
+    redis.xreadgroup.side_effect = [[], [], asyncio.CancelledError()]
+    monkeypatch.setattr(
+        module.Redis, "from_url", MagicMock(return_value=redis)
+    )
+    reclaim = AsyncMock()
+    lag = AsyncMock()
+    monkeypatch.setattr(module, "reclaim_stale", reclaim)
+    monkeypatch.setattr(module, "log_consumer_lag", lag)
+    if hasattr(module, "_load_model"):
+        monkeypatch.setattr(module, "_load_model", MagicMock())
+    clock = iter([100.0, 110.0, 130.0, 130.0])
+    monkeypatch.setattr(
+        module, "time", SimpleNamespace(monotonic=lambda: next(clock))
+    )
+
+    await module.consume_loop()
+
+    assert all(call.kwargs["block"] == 5000 for call in redis.xreadgroup.await_args_list)
+    assert lag.await_count == 1
+    assert reclaim.await_count == 2
+
+
+@pytest.mark.asyncio(scope="session")
+async def test_reclaim_stale_processes_claimed_entries_and_acks_deleted_ids(
+    consumer_module, monkeypatch
+):
+    module, _ = consumer_module
+    redis = AsyncMock()
+    fields = _job_fields(module, "claimed-job")
+    redis.xautoclaim.side_effect = [
+        (b"2-0", [(b"1-0", fields)], [b"deleted-0"]),
+        (b"0-0", [], []),
+    ]
+    process_entry = AsyncMock()
+    monkeypatch.setattr(module, "process_entry", process_entry)
+
+    await module.reclaim_stale(redis, "group")
+
+    assert redis.xautoclaim.await_count == 2
+    process_entry.assert_awaited_once_with(redis, "group", b"1-0", fields)
+    redis.xack.assert_awaited_once_with(
+        "inference_jobs", "group", b"deleted-0"
+    )
+
+
+@pytest.mark.asyncio(scope="session")
+async def test_pending_job_from_ghost_consumer_is_reclaimed(
+    consumer_module, redis_client, monkeypatch
+):
+    module, inference = consumer_module
+    inference_function = _inference_function(inference)
+    inference_function.return_value = {"text": "recovered"}
+    group = f"{module.WORKER_NAME}_ghost_test"
+    job_id = f"ghost-{module.WORKER_NAME}"
+    await redis_client.xgroup_create(
+        "inference_jobs", group, id="0", mkstream=True
+    )
+    await redis_client.setex(f"payload:{job_id}", 7200, b"payload")
+    await redis_client.xadd(
+        "inference_jobs",
+        {
+            "job_id": job_id,
+            "worker_name": module.WORKER_NAME,
+            "model_id": "model-1",
+            "model_name": _model_name(module),
+            "model_version": "v1",
+            "retry_count": "0",
+        },
+    )
+    entries = await redis_client.xreadgroup(
+        group, "ghost-consumer", {"inference_jobs": ">"}, count=1
+    )
+    assert entries
+    monkeypatch.setattr(module, "RECLAIM_IDLE_MS", 0)
+
+    await module.reclaim_stale(redis_client, group)
+
+    pending = await redis_client.xpending("inference_jobs", group)
+    assert pending["pending"] == 0
+    result = await redis_client.get(f"result:{job_id}")
+    assert json.loads(result)["status"] == "success"

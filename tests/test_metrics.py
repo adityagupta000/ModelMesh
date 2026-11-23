@@ -32,6 +32,7 @@ def test_failed_client_has_one_warning_per_backoff_window(
     metrics_module, monkeypatch, caplog
 ):
     module, clickhouse_connect = metrics_module
+    monkeypatch.setenv("CLICKHOUSE_HOST", "metrics-db")
     now = [100.0]
     monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
     clickhouse_connect.get_client.side_effect = OSError("ClickHouse offline")
@@ -60,10 +61,27 @@ def test_client_uses_configured_host_and_port(metrics_module, monkeypatch):
     module, clickhouse_connect = metrics_module
     client = MagicMock()
     clickhouse_connect.get_client.return_value = client
+    module._client = None
     monkeypatch.setenv("CLICKHOUSE_HOST", "metrics-db")
     monkeypatch.setenv("CLICKHOUSE_PORT", "9123")
 
     _log_one_metric(module)
 
-    clickhouse_connect.get_client.assert_called_once_with(host="metrics-db", port=9123)
+    clickhouse_connect.get_client.assert_called_once_with(
+        host="metrics-db",
+        port=9123,
+        connect_timeout=2,
+        send_receive_timeout=5,
+    )
     client.insert.assert_called_once()
+
+
+def test_missing_clickhouse_host_disables_metrics(metrics_module, monkeypatch):
+    module, clickhouse_connect = metrics_module
+    module._client = None
+    module._skip_until = 0.0
+    monkeypatch.delenv("CLICKHOUSE_HOST", raising=False)
+
+    _log_one_metric(module)
+
+    clickhouse_connect.get_client.assert_not_called()
