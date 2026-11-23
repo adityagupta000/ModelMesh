@@ -18,7 +18,7 @@ class TokenResponse(BaseModel):
 
 
 class ApiKeyCreate(BaseModel):
-    rate_limit_per_min: int = 60
+    rate_limit_per_min: int = Field(default=60, ge=1, le=1000)
 
 
 class ApiKeyResponse(BaseModel):
