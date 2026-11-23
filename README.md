@@ -1,359 +1,133 @@
-# ModelMesh — Multi-Model Inference Gateway
+# ModelMesh
 
-A horizontally scalable ML serving platform demonstrating registry-driven architecture, async job queues, real-time streaming, and Kubernetes orchestration.
+A multi-model inference gateway. Clients authenticate, name a model, and either submit an **asynchronous job** (REST) or send a request over a **WebSocket**. The gateway looks the model up in a Postgres **registry** on every request, so adding, disabling, re-pointing or canarying a model is a data change.
 
-**Status**: Development implementation; known gaps and current behavior are documented below.
+It ships with two example workers, **`doc-ocr`** (EasyOCR) and **`asr`** (Whisper `tiny`), runs on Docker Compose or Kubernetes (minikube), and includes a Redis-Streams job queue with retries and crash recovery, per-key rate limiting, best-effort ClickHouse metrics, and an optional canary rollback guard.
 
-📖 **[Setup Guide](SETUP.md)** | ▶️ **[Run and stop ModelMesh](RUNNING.md)** | 📁 **[Documentation](docs/)**
+> **Status: a development implementation, not production-ready.** The core path is tested (102 tests pass, reproduced) and the project is candid about its gaps. But there is no TLS, workers and Redis are unauthenticated, registration is open, a full Redis returns bare HTTP 500s while `/ready` stays green, and uploads linger in Redis for an hour. Read [Status and limitations](docs/status-and-limitations.md) and [Security](docs/security.md) before exposing it.
 
----
+## What it does
 
-## What is ModelMesh?
+- **REST jobs.** `POST /v1/infer/{model}` stores the upload, queues a job, and returns a `job_id`; `GET /v1/jobs/{id}` returns the result. Jobs are private to the user who created them.
+- **WebSocket inference.** `/v1/ws/infer/{model}` sends one whole file and gets the result back on the same socket, calling the worker over HTTP or gRPC as the registry says.
+- **Registry-driven routing.** Name, version, worker, protocol, endpoint, status and canary percentage live in Postgres.
+- **Canary routing** on the REST path by version number, with a CLI guard that can reset a canary to 0%.
+- **Reliable workers.** Retries with 2, 4, 8 second backoff, a dead-letter stream, and recovery of jobs left by a crashed worker. Permanent input errors (bad image, bad audio) fail immediately with the real error.
+- **Auth.** Users with bcrypt passwords, JWTs for creating API keys, hashed API keys, per-key fixed-window rate limits, admin keys for registry changes.
+- **Best-effort metrics.** One ClickHouse row per finished job (Kubernetes, once the table is created).
 
-ModelMesh is an inference gateway built to solve a core problem in ML serving: **how do you add, version, and route between multiple models without constantly redeploying your gateway code?**
+## What it does not do
 
-Most inference servers hardcode model names and endpoints. Adding a new model = code change + deployment. Switching protocols (HTTP → gRPC) = refactor. Canary rollouts = complex Kubernetes replica manipulation.
+- **No TLS, Ingress, autoscaling, Prometheus, Grafana, or `/metrics`.** None are built.
+- **No true streaming.** The "streaming" WebSocket sends the whole file as one message.
+- **No canary, retries, queueing or metrics on the WebSocket path.**
+- **No durable Redis on Kubernetes**, no job replay tool, no multi-tenancy, no result cache.
+- **No end-to-end test and no CI pipeline.**
+- The Kafka code is **dormant** and has drifted from the Redis path.
 
-ModelMesh stores model metadata in a PostgreSQL registry and uses it to assign asynchronous jobs to workers. The WebSocket path reads protocol and endpoint from the registry, but still contains model-name-specific branches; REST jobs do not use the registry protocol, and WebSocket inference does not use canary routing. Removing those remaining model-specific branches is planned for Phase 8.
-
-This project provides a working inference baseline across five phases. Phase 5 observability is partial; Prometheus and Grafana are not implemented.
-
----
-
-## Why This Architecture Matters
-
-### The Registry Pattern
-
-Traditional approach:
-
-```python
-if model_name == "doc-ocr":
-    return http.post("http://ocr-worker:8001/infer", data)
-elif model_name == "asr":
-    return http.post("http://asr-worker:8002/infer", data)
-```
-
-Every new model requires code changes. Switching protocols requires refactoring. Versioning requires complex routing logic.
-
-ModelMesh approach (asynchronous REST job assignment):
-
-```python
-model = await registry.get_model(db, model_name)  # DB lookup
-job = {"model_name": model.name, "worker_name": model.worker_name}
-```
-
-Adding a model:
-
-```bash
-POST /v1/models {"name": "new-model", "protocol": "grpc", "endpoint": "..."}
-```
-
-This registers model metadata; a new inference type may still require code changes. Direct WebSocket inference currently has model-specific branches (Phase 8).
-
-Switching protocols for WebSocket inference (the REST job path ignores `protocol`):
-
-```sql
-UPDATE models SET protocol = 'grpc', endpoint = 'worker:50051' WHERE name = 'doc-ocr';
-```
-
-For WebSocket inference, this changes HTTP/gRPC without a code change or deployment.
-
----
-
-## System Architecture
+## How it fits together
 
 ```mermaid
-graph TB
-    subgraph "Client Layer"
-        Client[Client Application]
-        WSClient[WebSocket Client]
-    end
-
-    subgraph "Gateway Service — K8s Deployment"
-        Gateway[FastAPI Gateway<br/>Port 8000]
-        Auth[JWT + API Key Auth]
-        RateLimit[Rate Limiter]
-        Registry[Model Registry]
-        Canary[Canary Router]
-        JobQueue[Job Queue Manager]
-        WSHandler[WebSocket Handler]
-    end
-
-    subgraph "Metadata Store"
-        Postgres[(PostgreSQL<br/>Users, Keys, Models)]
-    end
-
-    subgraph "Queue Layer"
-        RedisStreams[Redis Streams<br/>Consumer Groups]
-        RedisStore[Redis<br/>Job Results + Rate Limits]
-    end
-
-    subgraph "Worker Services — K8s Deployment"
-        Consumer1[Redis Consumer]
-        Consumer2[Redis Consumer]
-        DocOCR[doc-ocr-worker<br/>HTTP:8001 gRPC:50051]
-        ASR[asr-worker<br/>HTTP:8002 gRPC:50052]
-    end
-
-    subgraph "Analytics — Kubernetes only"
-        ClickHouse[(ClickHouse<br/>Request Analytics)]
-    end
-
-    %% Client entry
-    Client -->|"HTTP/REST + Poll status"| Gateway
-    WSClient <-->|"WebSocket, real-time"| WSHandler
-
-    %% Gateway internal flow
-    Gateway --> Auth --> RateLimit --> Registry --> Canary --> JobQueue
-
-    %% Gateway to metadata store
-    Auth --> Postgres
-    Registry --> Postgres
-
-    %% Async job path
-    JobQueue -->|Enqueue| RedisStreams
-    RedisStreams -->|Pull jobs| Consumer1
-    RedisStreams -->|Pull jobs| Consumer2
-    Consumer1 --> DocOCR
-    Consumer2 --> ASR
-
-    %% Job results
-    DocOCR -->|"Store result"| RedisStore
-    ASR -->|"Store result"| RedisStore
-    RedisStore -.->|"Fetch result"| Gateway
-
-    %% Streaming path
-    WSHandler -->|"Registry lookup"| Registry
-    WSHandler <-->|"gRPC stream, bidirectional"| DocOCR
-    WSHandler <-->|"gRPC stream, bidirectional"| ASR
-
-    %% Metrics
-    DocOCR -.->|Metrics| ClickHouse
-
-    classDef default fill:#ffffff,stroke:#000000,stroke-width:1.5px,color:#000000
+flowchart LR
+    C["Client"] -->|"REST job"| G["Gateway<br/>FastAPI :8000"]
+    C -->|"WebSocket"| G
+    G --> PG[("Postgres<br/>users, keys, registry")]
+    G --> RD[("Redis<br/>job stream, payloads,<br/>results, rate limits")]
+    RD --> W1["doc-ocr worker<br/>HTTP, gRPC, consumer"]
+    RD --> W2["asr worker<br/>HTTP, gRPC, consumer"]
+    G -.->|"WebSocket path:<br/>direct call"| W1
+    G -.-> W2
+    W1 -.->|"best effort"| CH[("ClickHouse<br/>Kubernetes only")]
+    W2 -.-> CH
 ```
 
----
+Details: [Architecture](docs/architecture.md).
 
-## Key Design Decisions
+## Quick start
 
-### 1. Registry-Driven Routing
-
-**Problem**: Hardcoded model names force redeployments for every model addition.
-
-**Solution**: The `models` table stores name, version, worker_name, protocol, and endpoint. The asynchronous REST path resolves the worker from registry metadata; direct WebSocket inference still has model-name-specific branches (Phase 8).
-
-**Payoff**:
-
-- Phase 3: WebSocket protocol selection (HTTP or gRPC) reads registry data; REST jobs do not read the protocol field
-- Phase 5: REST canary rollout uses a new version row and `canary_percent`; WebSocket inference does not use canary routing
-
-### 2. Async Queue Architecture
-
-**Problem**: Synchronous inference blocks gateway capacity. Slow requests stall everything.
-
-**Solution**: Gateway enqueues jobs to Redis Streams, returns job_id immediately. Workers pull from queue at their own pace.
-
-**Payoff**:
-
-- Gateway never blocks
-- Workers scale independently (3 replicas = 3x throughput)
-- Retries + DLQ for failed jobs
-
-**Trade-off**: Clients poll `/v1/jobs/{id}` instead of instant response (Phase 3 adds WebSockets to fix this)
-
-### 3. Multi-Service Containers
-
-**Problem**: Splitting HTTP + gRPC + Redis consumer into separate processes may load model resources more than once.
-
-**Solution**: A worker container starts the HTTP server, gRPC server, and Redis consumer as separate processes. The processes do not share in-memory model instances.
-
-**Trade-off**: Each process can load its own model instance; running services in one container does not mean model weights are loaded only once. Final Phase 9 Compose measurements showed the ASR container at 1.084 GiB and the doc-ocr container at 1.185 GiB; Kubernetes measurements require a running cluster.
-
-### 4. Protocol Selection
-
-The WebSocket path reads `protocol` and `endpoint` from the registry, then calls `route_request`. That function still contains model-name-specific branches; generic model dispatch is planned for Phase 8. The REST job path queues work and does not read the `protocol` field.
-
----
-
-## What Was Built
-
-### Phase 1: Core Gateway ([docs](docs/Phase1-Core-Gateway.md))
-
-- Dynamic model registry (PostgreSQL)
-- JWT auth + API key management
-- Redis rate limiting (fixed window)
-- Two workers: EasyOCR (doc-ocr) + Whisper (asr)
-
-### Phase 2: Async Job Queue ([docs](docs/Phase2-Async-Job-Queue.md))
-
-- Redis Streams job queue with consumer groups
-- Dormant Kafka alternative code (not wired into the application or Compose)
-- Exponential backoff retry logic (2s, 4s, 8s)
-- Dead-letter queue for failed jobs
-- Consumer lag monitoring (XLEN, XPENDING)
-- Horizontal worker scaling
-
-### Phase 3: Streaming + gRPC ([docs](docs/Phase3-Streaming-gRPC-WebSockets.md))
-
-- WebSocket endpoint for real-time streaming
-- gRPC with Protocol Buffers for internal communication
-- Bidirectional streaming RPC (PredictStream)
-- WebSocket protocol selection from registry data (HTTP ↔ gRPC); REST jobs do not read `protocol`
-- Multi-service containers (HTTP + gRPC + Redis consumer)
-
-### Phase 4: Kubernetes ([docs](docs/Phase4-Kubernetes-Deployment.md))
-
-- Namespace isolation (`modelmesh`)
-- StatefulSet for Postgres with PersistentVolume
-- Deployments for Gateway, Workers, Redis
-- ConfigMaps for Postgres init SQL
-- Secrets for JWT + DB passwords
-- Resource requests/limits + health probes
-- Tested on minikube (2 CPU / 4GB RAM)
-
-### Phase 5: Observability + Canary ([docs](docs/Phase5-Observability-Canary.md))
-
-**Implemented**:
-
-- Best-effort final-outcome ClickHouse metrics from both workers; ClickHouse is Kubernetes-only and is not included in Compose
-- Canary routing logic (`canary_percent` field in registry)
-- Version pinning support (`?version=v1` bypasses canary)
-- Optional Phase 11 canary rollback guard: dry-run by default; starvation and synthetic-error demos verified; `--apply` only sets `canary_percent` to 0
-
-**Not Implemented / Not Available**:
-
-- Prometheus instrumentation and `/metrics` endpoints
-- Prometheus and Grafana deployment
-- ClickHouse service in Docker Compose; worker metric inserts back off after a failure
-
----
-
-## Tech Stack
-
-| Component         | Technology                          | Purpose                                |
-| ----------------- | ----------------------------------- | -------------------------------------- |
-| **Gateway**       | FastAPI (Python 3.11+)              | HTTP/WebSocket API server              |
-| **Workers**       | EasyOCR, Whisper                    | Pretrained PyTorch models              |
-| **Queue**         | Redis Streams; dormant Kafka code   | Async job distribution                 |
-| **Metadata**      | PostgreSQL                          | Users, keys, models (the requests table is not currently written) |
-| **Analytics**     | ClickHouse (Kubernetes only)        | Best-effort doc-ocr worker metrics      |
-| **Protocols**     | HTTP/REST, WebSocket, gRPC/Protobuf | Client and internal communication      |
-| **Orchestration** | Docker Compose, Kubernetes          | Dev and local deployment               |
-
----
-
-## What This Demonstrates
-
-**Architecture Patterns**:
-
-- Registry-driven worker assignment; direct WebSocket inference still has model-specific branches
-- Async queue decoupling (gateway never blocks)
-- WebSocket protocol selection from registry data (HTTP/gRPC)
-- Multi-process worker containers (HTTP + gRPC + Redis consumer)
-- Canary deployments without K8s complexity
-
-**Engineering Skills**:
-
-- API design (FastAPI, REST, WebSocket, gRPC)
-- Queue systems (Redis Streams, consumer groups; dormant Kafka code)
-- Database design (transactional + analytical workloads)
-- Kubernetes manifests (StatefulSets, PVCs, Services)
-- Observability (best-effort doc-ocr ClickHouse metrics)
-
-**System Thinking**:
-
-- Trade-offs documented (async vs sync, HTTP vs gRPC, Redis Streams vs dormant Kafka code)
-- Failure modes handled (retry logic, DLQ, idempotency)
-- Honest scope (production gaps clearly stated)
-
----
-
-## Limitations & Scope
-
-**What this is:**
-
-- Development/learning project demonstrating ML serving architecture
-- Tested on Docker Compose and local minikube only
-- Built to showcase registry-driven design patterns
-
-**What this is NOT:**
-
-- Production-ready (secrets committed to git, no TLS, no external monitoring)
-- Tested at scale (minikube: 2 CPU / 4GB RAM)
-- Multi-tenant ready (basic auth, no isolation)
-
-**Known gaps:**
-
-- Kubernetes secrets committed to repo (NOT production-safe)
-- Prometheus instrumentation and Prometheus/Grafana deployment are not implemented
-- ClickHouse is not included in Docker Compose; Compose metric writes produce warnings
-- No Ingress controller or TLS
-- No CI/CD pipeline
-- Tested with small payloads only
-
----
-
-## Project Structure
-
-```
-modelmesh/
-├── gateway/                 # FastAPI gateway + registry
-│   ├── main.py
-│   ├── registry.py
-│   ├── job_queue.py
-│   ├── grpc_client.py
-│   └── metrics.py
-├── workers/                 # Model workers
-│   ├── doc_ocr/            # EasyOCR (HTTP + gRPC + consumer)
-│   └── asr/                # Whisper (HTTP + gRPC + consumer)
-├── k8s/                    # Kubernetes manifests
-│   ├── gateway/
-│   ├── workers/
-│   ├── postgres/
-│   ├── redis/
-│   └── clickhouse/
-├── docs/                   # Phase documentation
-│   ├── Phase1-Core-Gateway.md
-│   ├── Phase2-Async-Job-Queue.md
-│   ├── Phase3-Streaming-gRPC-WebSockets.md
-│   ├── Phase4-Kubernetes-Deployment.md
-│   └── Phase5-Observability-Canary.md
-├── inference.proto         # gRPC contract
-├── docker-compose.yml
-├── SETUP.md               # Setup instructions
-└── README.md              # This file
-```
-
----
-
-## Quick Start
+Requires Docker with Compose (about 10 GB of disk; the **first build is slow**, about 51 minutes on the author's machine).
 
 ```bash
-# Docker Compose
-# See RUNNING.md for start, rebuild, stop, and resume commands.
-
-# Kubernetes (minikube)
-minikube start --cpus=2 --memory=4096
-eval $(minikube docker-env)
-# ... build images and kubectl apply
-
-# See SETUP.md for detailed instructions
+cp .env.example .env        # set JWT_SECRET to a long random value
+docker compose up --build -d
+curl -s http://localhost:8000/ready          # {"status":"ready"}
 ```
 
-**Full setup guide**: [SETUP.md](SETUP.md) | **[Run and stop ModelMesh](RUNNING.md)**
+Then register, log in, create an API key and submit a job; the step-by-step commands, sample files, admin setup and the Kubernetes path are in [Getting started](docs/getting-started.md).
 
----
+## API at a glance
+
+| Endpoint                                            | Auth                | Purpose                               |
+| --------------------------------------------------- | ------------------- | ------------------------------------- |
+| `POST /v1/auth/register`, `/login`, `/api-keys`     | none, none, JWT     | Accounts and API keys                 |
+| `GET /v1/models`, `/v1/models/{name}`               | none                | Public model listing (routing hidden) |
+| `POST /v1/models`, `PATCH`/`DELETE /v1/models/{id}` | admin key           | Manage the registry                   |
+| `POST /v1/infer/{model}`                            | API key             | Submit a job                          |
+| `GET /v1/jobs/{id}`                                 | API key (same user) | Poll a job                            |
+| `WS /v1/ws/infer/{model}`                           | API key in query    | Direct inference                      |
+| `GET /health`, `/ready`                             | none                | Liveness, readiness                   |
+
+Full contract with captured responses: [API](docs/api.md).
+
+## Know this before you rely on it
+
+Measured on a real Postgres 16 and Redis 7 during this documentation review:
+
+- **A full Redis breaks uploads with HTTP 500.** With the Kubernetes setting (200 MB, no eviction), the 16th consecutive 10 MiB upload failed. `/ready` kept answering 200.
+- **WebSocket errors leak the internal worker URL** that `/v1/models` is built to hide.
+- **Finished jobs leave their upload in Redis for an hour.**
+- **A job for a model with no running worker is never processed and never fails.** It shows `queued` until it expires.
+- **The canary guard can roll back a healthy canary** right after it is enabled; wait one full window before running it with `--apply`.
+- The suite needs a real Postgres and Redis and **leaves rows behind**; use a scratch database.
+
+## Repository layout
+
+```
+gateway/          FastAPI gateway: main.py, auth, registry, job_queue, rate_limit,
+                  grpc_client, canary_guard.py (CLI), kafka_queue.py (dormant)
+workers/
+  doc_ocr/        EasyOCR worker: HTTP, gRPC, Redis consumer, metrics
+  asr/            Whisper worker: HTTP, gRPC (with PredictStream), consumer, metrics
+db/init.sql       Postgres schema and seed models
+migrations/       Idempotent schema changes (003, 004)
+clickhouse/       Metrics table DDL (reconstructed; apply by hand)
+k8s/              Namespace, Postgres, Redis, ClickHouse, gateway, workers
+docker-compose.yml, docker-compose.test.yml
+scripts/smoke_test.sh
+test_ws_client.py, test_ws_client.html, ws_latency_compare.py
+load-test.yml     Artillery scenario
+tests/            102 pytest tests (real Postgres and Redis required)
+docs/             Documentation (below)
+```
+
+Not in the reviewed export but referenced by the project: `inference.proto`, two Kubernetes Secret manifests, `.env.example`, `fixtures/`, `load-test-vars.csv`.
 
 ## Documentation
 
-| Document                                            | Description                                                   |
-| --------------------------------------------------- | ------------------------------------------------------------- |
-| [SETUP.md](SETUP.md)                                | Complete setup instructions for Docker Compose and Kubernetes |
-| [Phase 1](docs/Phase1-Core-Gateway.md)              | Core gateway + model registry                                 |
-| [Phase 2](docs/Phase2-Async-Job-Queue.md)           | Async job queue (Redis Streams; Kafka code is dormant)        |
-| [Phase 3](docs/Phase3-Streaming-gRPC-WebSockets.md) | WebSockets + gRPC streaming                                   |
-| [Phase 4](docs/Phase4-Kubernetes-Deployment.md)     | Kubernetes deployment on minikube                             |
-| [Phase 5](docs/Phase5-Observability-Canary.md)      | ClickHouse analytics + canary routing                         |
-| [Phase 11 (optional)](docs/Phase11_Canary_Rollback_Guard.md) | Tested canary rollback guard; dry-run by default, rollback only sets the percentage to 0 |
+| Document                                                 | Read it for                                                                   |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| [Getting started](docs/getting-started.md)               | Prerequisites, Compose and minikube, first requests, admin setup, smoke test  |
+| [Architecture](docs/architecture.md)                     | Components, both request paths, process model, decisions                      |
+| [API](docs/api.md)                                       | Every endpoint and WebSocket message, errors, limits, captured examples       |
+| [Queue and workers](docs/queue-and-workers.md)           | Job lifecycle, retries, dead letters, crash recovery, the two workers, gRPC   |
+| [Registry and canary](docs/registry-and-canary.md)       | Version selection, canary, adding models, the rollback guard                  |
+| [Data stores](docs/data-stores.md)                       | Postgres schema, Redis keys and lifetimes, ClickHouse                         |
+| [Operations](docs/operations.md)                         | Configuration reference, sizing, monitoring, troubleshooting                  |
+| [Security](docs/security.md)                             | Controls, gaps, what an operator must add                                     |
+| [Testing](docs/testing.md)                               | What the 102 tests cover and miss, how to run them, scripts, recorded numbers |
+| [Status and limitations](docs/status-and-limitations.md) | Verdict, verified facts, known issues, history, open work                     |
 
+## Tests
+
+```bash
+export TEST_DATABASE_URL=postgresql://user:pass@localhost/modelmesh_test
+export TEST_REDIS_URL=redis://localhost:6379/1
+pip install -r tests/requirements.txt
+pytest -q                     # 102 passed, 8 warnings; run it twice
+```
+
+Setup of the scratch database and Redis is in [Testing](docs/testing.md#running-the-tests).
+
+## License
+
+No license file or license statement was present in the reviewed export. Add one before distributing the code.
