@@ -21,7 +21,10 @@ async def infer(file: UploadFile = File(...)):
     if file.content_type and file.content_type not in AUDIO_MIME_TYPES:
         raise HTTPException(400, f"Unexpected content type: {file.content_type}")
     audio_bytes = await file.read()
-    result = transcribe(audio_bytes)
+    try:
+        result = transcribe(audio_bytes)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return result
 
 
