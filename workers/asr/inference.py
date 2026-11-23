@@ -23,6 +23,10 @@ def transcribe(audio_bytes: bytes) -> dict:
         tmp_path = f.name
     try:
         result = model.transcribe(tmp_path)
+    except RuntimeError as exc:
+        if str(exc).startswith("Failed to load audio"):
+            raise ValueError("Invalid audio data") from exc
+        raise
     finally:
         os.unlink(tmp_path)
     return {"text": result["text"]}
