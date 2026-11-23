@@ -127,7 +127,3 @@ pytest -q                     # 102 passed, 8 warnings; run it twice
 ```
 
 Setup of the scratch database and Redis is in [Testing](docs/testing.md#running-the-tests).
-
-## License
-
-No license file or license statement was present in the reviewed export. Add one before distributing the code.
