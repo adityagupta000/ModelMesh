@@ -17,6 +17,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
 MAX_RETRIES = 3
 RETRY_DELAY_BASE = 2
 STREAM_MAXLEN = int(os.getenv("STREAM_MAXLEN", "10000"))
+MAINTENANCE_INTERVAL_SECONDS = 30.0
 
 
 class PermanentError(Exception):
@@ -202,7 +203,7 @@ async def consume_loop():
             logger.info(f"Consumer group {group} already exists")
         logger.info(f"Starting consumer loop for {WORKER_NAME}")
         await reclaim_stale(redis, group)
-        lag_counter = 0
+        last_maintenance = time.monotonic()
         while True:
             try:
                 messages = await redis.xreadgroup(
@@ -210,13 +211,13 @@ async def consume_loop():
                     CONSUMER,
                     {"inference_jobs": ">"},
                     count=1,
-                    block=100,
+                    block=5000,
                 )
-                lag_counter += 1
-                if lag_counter >= 10:
+                now = time.monotonic()
+                if now - last_maintenance >= MAINTENANCE_INTERVAL_SECONDS:
                     await log_consumer_lag(redis, group)
                     await reclaim_stale(redis, group)
-                    lag_counter = 0
+                    last_maintenance = time.monotonic()
                 if not messages:
                     continue
                 for _, entries in messages:
